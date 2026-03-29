@@ -45,10 +45,12 @@ export default function AdminLoginPage() {
                     dataManage: true,
                     questions: true,
                     strategies: true,
+                    employeeAuth: true,
                 }
                 : result.permissions;
 
             const hasAnyPermission = normalizedPermissions.dashboard
+                || normalizedPermissions.employeeAuth
                 || normalizedPermissions.questions
                 || normalizedPermissions.strategies;
             if (!hasAnyPermission) {

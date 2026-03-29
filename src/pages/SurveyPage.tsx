@@ -17,6 +17,76 @@ const DIMENSIONS: { id: Dimension; label: string }[] = [
     { id: 'tools', label: '工具' },
 ];
 
+function normalizeWeight(value: unknown, fallback = 1): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return Math.max(0, Math.round(fallback));
+    return Math.max(0, Math.round(parsed));
+}
+
+interface DimensionEvaluation {
+    visibleQuestions: ActiveRule['questions'];
+    requiredCount: number;
+    answeredCount: number;
+    isComplete: boolean;
+    score: number;
+    maxScore: number;
+    forcedTrue: boolean;
+    failureActions: string[];
+}
+
+function evaluateDimensionQuestions(
+    dimensionQuestions: ActiveRule['questions'],
+    answers: Record<string, boolean>
+): DimensionEvaluation {
+    const visibleQuestions: ActiveRule['questions'] = [];
+    const failureActions: string[] = [];
+    let score = 0;
+    let maxScore = 0;
+    let answeredCount = 0;
+    let forcedTrue = false;
+
+    for (const question of dimensionQuestions) {
+        visibleQuestions.push(question);
+        const weight = normalizeWeight(question.weight, 1);
+        maxScore += weight;
+
+        const hasAnswer = answers[question.id] !== undefined;
+        if (hasAnswer) {
+            answeredCount += 1;
+            if (answers[question.id] === true) {
+                score += weight;
+            } else {
+                const action = question.failureAction.trim();
+                const importance = (question.importance ?? 'M').toUpperCase();
+                if ((importance === 'H' || importance === 'M') && action.length > 0) {
+                    failureActions.push(action);
+                }
+            }
+        }
+
+        if (question.isDecisive) {
+            if (answers[question.id] === false) {
+                forcedTrue = true;
+                break;
+            }
+            if (answers[question.id] !== true) {
+                break;
+            }
+        }
+    }
+
+    return {
+        visibleQuestions,
+        requiredCount: visibleQuestions.length,
+        answeredCount,
+        isComplete: answeredCount === visibleQuestions.length,
+        score,
+        maxScore,
+        forcedTrue,
+        failureActions,
+    };
+}
+
 export default function SurveyPage() {
     const { hospitalId } = useParams();
     const navigate = useNavigate();
@@ -59,14 +129,51 @@ export default function SurveyPage() {
 
     const handleAnswer = (questionId: string, value: boolean) => {
         if (!hospitalId) return;
-        saveDraft(hospitalId, { ...answers, [questionId]: value });
+        const nextAnswers = { ...answers, [questionId]: value };
+        const currentQuestion = questions.find((item) => item.id === questionId);
+
+        // 决定性题目选“否”后，清理该维度后续答案，防止脏数据残留
+        if (currentQuestion?.isDecisive && value === false) {
+            const dimensionQuestions = questions.filter((item) => item.dimension === currentQuestion.dimension);
+            const currentIndex = dimensionQuestions.findIndex((item) => item.id === questionId);
+            dimensionQuestions.slice(currentIndex + 1).forEach((item) => {
+                if (Object.prototype.hasOwnProperty.call(nextAnswers, item.id)) {
+                    delete nextAnswers[item.id];
+                }
+            });
+        }
+
+        saveDraft(hospitalId, nextAnswers);
     };
 
-    const currentDimLength = questions.filter(q => q.dimension === DIMENSIONS[activeTab].id).length;
-    const currentDimAnswered = questions.filter(q => q.dimension === DIMENSIONS[activeTab].id).filter(q => answers[q.id] !== undefined).length;
+    const dimensionEvaluations = useMemo<Record<Dimension, DimensionEvaluation>>(() => {
+        return {
+            philosophy: evaluateDimensionQuestions(
+                questions.filter((question) => question.dimension === 'philosophy'),
+                answers
+            ),
+            mechanism: evaluateDimensionQuestions(
+                questions.filter((question) => question.dimension === 'mechanism'),
+                answers
+            ),
+            team: evaluateDimensionQuestions(
+                questions.filter((question) => question.dimension === 'team'),
+                answers
+            ),
+            tools: evaluateDimensionQuestions(
+                questions.filter((question) => question.dimension === 'tools'),
+                answers
+            ),
+        };
+    }, [questions, answers]);
+
+    const currentDimensionId = DIMENSIONS[activeTab].id;
+    const currentEvaluation = dimensionEvaluations[currentDimensionId];
+    const currentDimLength = currentEvaluation.requiredCount;
+    const currentDimAnswered = currentEvaluation.answeredCount;
 
     const isLastTab = activeTab === DIMENSIONS.length - 1;
-    const calculatedAll = questions.length > 0 && questions.every(q => answers[q.id] !== undefined);
+    const calculatedAll = questions.length > 0 && DIMENSIONS.every((dimension) => dimensionEvaluations[dimension.id].isComplete);
 
     const handleSubmit = async () => {
         if (!hospitalId || !calculatedAll || isSubmitting || !employeeSession || !hasHospitalAccess) return;
@@ -75,28 +182,18 @@ export default function SurveyPage() {
 
         const scores: Record<Dimension, number> = { philosophy: 0, mechanism: 0, team: 0, tools: 0 };
         const maxScores: Record<Dimension, number> = { philosophy: 0, mechanism: 0, team: 0, tools: 0 };
+        const states: Record<Dimension, boolean> = { philosophy: false, mechanism: false, team: false, tools: false };
         const failureActions: string[] = [];
 
-        questions.forEach(q => {
-            const weight = Number.isFinite(Number(q.weight)) ? Number(q.weight) : 1;
-            maxScores[q.dimension] += weight;
-
-            if (answers[q.id]) {
-                scores[q.dimension] += weight;
-            } else {
-                const action = q.failureAction.trim();
-                if (action.length > 0) {
-                    failureActions.push(action);
-                }
-            }
+        (Object.keys(dimensionEvaluations) as Dimension[]).forEach((dimension) => {
+            const evaluation = dimensionEvaluations[dimension];
+            scores[dimension] = evaluation.score;
+            maxScores[dimension] = evaluation.maxScore;
+            states[dimension] = evaluation.forcedTrue
+                ? true
+                : isHigh(evaluation.score, activeRule.thresholds[dimension]);
+            failureActions.push(...evaluation.failureActions);
         });
-
-        const states = {
-            philosophy: isHigh(scores.philosophy, activeRule.thresholds.philosophy),
-            mechanism: isHigh(scores.mechanism, activeRule.thresholds.mechanism),
-            team: isHigh(scores.team, activeRule.thresholds.team),
-            tools: isHigh(scores.tools, activeRule.thresholds.tools),
-        };
 
         const strategyKey = getStrategyKey(states.philosophy, states.mechanism, states.team, states.tools);
         const strategy = activeRule.strategies[strategyKey] || { type: '未知分型 (解析异常)', strategy: '请检查维度计算逻辑或规则配置。' };
@@ -228,7 +325,7 @@ export default function SurveyPage() {
         navigate(`/result/${hospitalId}`);
     };
 
-    const currentQuestions = questions.filter(q => q.dimension === DIMENSIONS[activeTab].id);
+    const currentQuestions = currentEvaluation.visibleQuestions;
 
     if (!hasHospitalAccess) {
         return (
@@ -273,9 +370,9 @@ export default function SurveyPage() {
             <div className="border-b border-white/20 px-2 flex justify-between sticky top-[88px] z-10 bg-white/10 backdrop-blur-md">
                 {DIMENSIONS.map((dim, idx) => {
                     const isActive = activeTab === idx;
-                    const totalQ = questions.filter(q => q.dimension === dim.id).length;
-                    const ansQ = questions.filter(q => q.dimension === dim.id && answers[q.id] !== undefined).length;
-                    const isDone = ansQ === totalQ;
+                    const summary = dimensionEvaluations[dim.id];
+                    const totalQ = summary.requiredCount;
+                    const isDone = summary.isComplete && totalQ > 0;
 
                     return (
                         <button

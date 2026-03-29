@@ -5,18 +5,37 @@ import { ChevronLeft, CheckCircle2, Circle, ShieldAlert, Target, Zap, LayoutDash
 import { useAppStore } from '../lib/store';
 import { MOCK_HOSPITALS, STRATEGIES, QUESTIONS } from '../lib/constants';
 import type { Dimension } from '../lib/constants';
-import { normalizeBooleanState, toStateLabel } from '../lib/algorithm';
+import { normalizeBooleanState, normalizeStrategyKey, toDimensionCode } from '../lib/algorithm';
 import { supabase } from '../lib/supabase';
 import StatusBadge from '../components/StatusBadge';
+
+function toScoreMap(value: unknown): Record<Dimension, number> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const raw = value as Record<string, unknown>;
+    const scores: Record<Dimension, number> = {
+        philosophy: 0,
+        mechanism: 0,
+        team: 0,
+        tools: 0,
+    };
+
+    for (const dimension of (['philosophy', 'mechanism', 'team', 'tools'] as Dimension[])) {
+        const parsed = Number(raw[dimension]);
+        if (!Number.isFinite(parsed)) return null;
+        scores[dimension] = parsed;
+    }
+
+    return scores;
+}
 
 export default function ResultPage() {
     const { hospitalId } = useParams();
     const navigate = useNavigate();
     const { results, employeeSession } = useAppStore();
     const [checkedActions, setCheckedActions] = useState<Record<number, boolean>>({});
-    const [ruleVersionLabel, setRuleVersionLabel] = useState('未绑定');
-    const [isRuleVersionLoading, setIsRuleVersionLoading] = useState(false);
     const [showScoreDetails, setShowScoreDetails] = useState(false);
+    const [provinceAverageScores, setProvinceAverageScores] = useState<Record<Dimension, number> | null>(null);
+    const [provinceAverageLabel, setProvinceAverageLabel] = useState('全省平均水平');
 
     const authorizedHospital = employeeSession?.hospitals.find((item) => item.hospitalCode === hospitalId);
     const mockHospital = MOCK_HOSPITALS.find((item) => item.id === hospitalId);
@@ -24,61 +43,6 @@ export default function ResultPage() {
         ? { name: authorizedHospital.hospitalName || mockHospital?.name || '未知医院', id: hospitalId }
         : (mockHospital || { name: '未知医院', id: hospitalId });
     const result = results[hospitalId || ''];
-    const ruleVersionId = result?.ruleVersionId ?? null;
-
-    useEffect(() => {
-        let isMounted = true;
-
-        const loadRuleVersionLabel = async () => {
-            if (!ruleVersionId) {
-                if (isMounted) {
-                    setRuleVersionLabel('未绑定');
-                    setIsRuleVersionLoading(false);
-                }
-                return;
-            }
-
-            setIsRuleVersionLoading(true);
-            const { data, error } = await supabase
-                .from('rule_versions')
-                .select('version_code, version_name')
-                .eq('id', ruleVersionId)
-                .maybeSingle();
-
-            if (!isMounted) return;
-
-            if (error) {
-                console.error('加载规则版本信息失败:', error);
-                setRuleVersionLabel(`ID: ${ruleVersionId.slice(0, 8)}...`);
-                setIsRuleVersionLoading(false);
-                return;
-            }
-
-            if (!data) {
-                setRuleVersionLabel(`ID: ${ruleVersionId.slice(0, 8)}...`);
-                setIsRuleVersionLoading(false);
-                return;
-            }
-
-            const versionName = String(data.version_name ?? '').trim();
-            const versionCode = String(data.version_code ?? '').trim();
-            if (versionName && versionCode) {
-                setRuleVersionLabel(`${versionName} (${versionCode})`);
-            } else if (versionCode) {
-                setRuleVersionLabel(versionCode);
-            } else if (versionName) {
-                setRuleVersionLabel(versionName);
-            } else {
-                setRuleVersionLabel(`ID: ${ruleVersionId.slice(0, 8)}...`);
-            }
-            setIsRuleVersionLoading(false);
-        };
-
-        void loadRuleVersionLabel();
-        return () => {
-            isMounted = false;
-        };
-    }, [ruleVersionId]);
 
     if (!authorizedHospital) {
         return (
@@ -126,18 +90,152 @@ export default function ResultPage() {
     });
     const totals = result.maxScores ?? fallbackTotals;
 
+    useEffect(() => {
+        let isMounted = true;
+
+        const loadProvinceAverage = async () => {
+            if (!hospitalId) return;
+
+            let province = (authorizedHospital?.province ?? '').trim();
+
+            if (!province) {
+                const { data: provinceRow } = await supabase
+                    .from('employee_permissions')
+                    .select('province')
+                    .eq('hospital_code', hospitalId)
+                    .eq('is_active', true)
+                    .limit(1)
+                    .maybeSingle();
+
+                province = typeof provinceRow?.province === 'string' ? provinceRow.province.trim() : '';
+            }
+
+            if (!province) {
+                if (isMounted) {
+                    setProvinceAverageScores(null);
+                    setProvinceAverageLabel('全省平均水平（未配置省份）');
+                }
+                return;
+            }
+
+            const { data: permissionRows, error: permissionError } = await supabase
+                .from('employee_permissions')
+                .select('hospital_code')
+                .eq('province', province)
+                .eq('is_active', true);
+
+            if (permissionError || !permissionRows) {
+                if (isMounted) {
+                    setProvinceAverageScores(null);
+                    setProvinceAverageLabel(`${province}平均（加载失败）`);
+                }
+                return;
+            }
+
+            const hospitalCodes = Array.from(
+                new Set(
+                    permissionRows
+                        .map((row) => (typeof row.hospital_code === 'string' ? row.hospital_code.trim() : ''))
+                        .filter((code) => code.length > 0),
+                ),
+            );
+
+            if (hospitalCodes.length === 0) {
+                if (isMounted) {
+                    setProvinceAverageScores(null);
+                    setProvinceAverageLabel(`${province}平均（暂无样本）`);
+                }
+                return;
+            }
+
+            let surveyRows: Record<string, unknown>[] = [];
+            let surveyError: { message?: string } | null = null;
+
+            const queryWithDeleted = await supabase
+                .from('survey_results')
+                .select('hospital_id, created_at, scores, deleted_at')
+                .in('hospital_id', hospitalCodes)
+                .is('deleted_at', null)
+                .order('created_at', { ascending: false });
+
+            surveyError = queryWithDeleted.error;
+            surveyRows = (queryWithDeleted.data ?? []) as Record<string, unknown>[];
+
+            if (surveyError && /column .*deleted_at.* does not exist|schema cache/i.test(surveyError.message ?? '')) {
+                const queryFallback = await supabase
+                    .from('survey_results')
+                    .select('hospital_id, created_at, scores')
+                    .in('hospital_id', hospitalCodes)
+                    .order('created_at', { ascending: false });
+                surveyError = queryFallback.error;
+                surveyRows = (queryFallback.data ?? []) as Record<string, unknown>[];
+            }
+
+            if (surveyError) {
+                if (isMounted) {
+                    setProvinceAverageScores(null);
+                    setProvinceAverageLabel(`${province}平均（加载失败）`);
+                }
+                return;
+            }
+
+            const latestByHospital = new Map<string, Record<string, unknown>>();
+            surveyRows.forEach((row) => {
+                const code = typeof row.hospital_id === 'string' ? row.hospital_id.trim() : '';
+                if (!code || latestByHospital.has(code)) return;
+                latestByHospital.set(code, row);
+            });
+
+            const sums: Record<Dimension, number> = { philosophy: 0, mechanism: 0, team: 0, tools: 0 };
+            let count = 0;
+
+            latestByHospital.forEach((row) => {
+                const scores = toScoreMap(row.scores);
+                if (!scores) return;
+                sums.philosophy += scores.philosophy;
+                sums.mechanism += scores.mechanism;
+                sums.team += scores.team;
+                sums.tools += scores.tools;
+                count += 1;
+            });
+
+            if (!isMounted) return;
+
+            if (count === 0) {
+                setProvinceAverageScores(null);
+                setProvinceAverageLabel(`${province}平均（暂无样本）`);
+                return;
+            }
+
+            setProvinceAverageScores({
+                philosophy: Number((sums.philosophy / count).toFixed(2)),
+                mechanism: Number((sums.mechanism / count).toFixed(2)),
+                team: Number((sums.team / count).toFixed(2)),
+                tools: Number((sums.tools / count).toFixed(2)),
+            });
+            setProvinceAverageLabel(`${province}平均（${count}家）`);
+        };
+
+        void loadProvinceAverage();
+        return () => {
+            isMounted = false;
+        };
+    }, [authorizedHospital?.province, hospitalId]);
+
     const data = [
-        { subject: '理念 (P)', current: result.scores.philosophy, avg: totals.philosophy * 0.5, fullMark: totals.philosophy },
-        { subject: '机制 (M)', current: result.scores.mechanism, avg: totals.mechanism * 0.6, fullMark: totals.mechanism },
-        { subject: '团队 (T)', current: result.scores.team, avg: totals.team * 0.4, fullMark: totals.team },
-        { subject: '工具 (To)', current: result.scores.tools, avg: totals.tools * 0.5, fullMark: totals.tools },
+        { subject: '理念 (P)', current: result.scores.philosophy, avg: provinceAverageScores?.philosophy ?? 0, fullMark: totals.philosophy },
+        { subject: '机制 (M)', current: result.scores.mechanism, avg: provinceAverageScores?.mechanism ?? 0, fullMark: totals.mechanism },
+        { subject: '团队 (T)', current: result.scores.team, avg: provinceAverageScores?.team ?? 0, fullMark: totals.team },
+        { subject: '工具 (To)', current: result.scores.tools, avg: provinceAverageScores?.tools ?? 0, fullMark: totals.tools },
     ];
 
-    const fallbackStrategy = STRATEGIES[result.strategyKey] || { type: '未知分型 (解析异常)', strategy: '请检查维度的 H/L 计算逻辑' };
+    const normalizedStrategyKey = normalizeStrategyKey(result.strategyKey);
+    const fallbackStrategy = STRATEGIES[normalizedStrategyKey] || { type: '未知分型 (解析异常)', strategy: '请检查分型字母映射或规则配置。' };
     const strategyData = {
         type: result.strategyType ?? fallbackStrategy.type,
         strategy: result.strategyText ?? fallbackStrategy.strategy,
     };
+    const mbtiTypeLabel = normalizedStrategyKey || result.strategyKey || '-';
 
     const toggleAction = (idx: number) => {
         setCheckedActions(prev => ({ ...prev, [idx]: !prev[idx] }));
@@ -145,19 +243,8 @@ export default function ResultPage() {
 
     const isAllDone = result.failureActions.length > 0 &&
         Object.values(checkedActions).filter(Boolean).length === result.failureActions.length;
-    const submittedAtText = new Date(result.timestamp).toLocaleString('zh-CN', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-    });
-    const cloudSyncVariant = result.cloudSynced === false ? 'error' : 'completed';
-    const cloudSyncLabel = result.cloudSynced === false
-        ? '仅本地（未写入云端）'
-        : (result.cloudRecordId ? `云端已同步 #${result.cloudRecordId.slice(0, 8)}` : '云端已同步');
+    const cloudSyncVariant = 'completed';
+    const cloudSyncLabel = 'VPS分型解析完成！';
 
     return (
         <div className="min-h-screen pb-20 result-impact-page text-white">
@@ -170,12 +257,6 @@ export default function ResultPage() {
                         <h1 className="med-title-md text-white truncate max-w-[220px] mx-auto result-impact-title">{hospital.name}</h1>
                         <p className="text-blue-100/90 med-eyebrow mt-1">多维分析报告</p>
                         <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5 text-[11px]">
-                            <span className="px-2 py-0.5 rounded-full result-impact-chip">
-                                提交时间：{submittedAtText}
-                            </span>
-                            <span className="px-2 py-0.5 rounded-full result-impact-chip">
-                                规则版本：{isRuleVersionLoading ? '加载中...' : ruleVersionLabel}
-                            </span>
                             <StatusBadge variant={cloudSyncVariant} label={cloudSyncLabel} />
                         </div>
                     </div>
@@ -200,13 +281,24 @@ export default function ResultPage() {
                             </span>
                             <h2 className="text-blue-100 med-section-title">宏观评估分型</h2>
                         </div>
-                        <div className="font-black text-3xl tracking-tight leading-none mb-3 result-impact-highlight">
-                            {strategyData.type}
+                        <div className="flex items-end justify-between gap-3 mb-3">
+                            <div>
+                                <div className="text-xs font-semibold text-blue-200/90 mb-1">MBTI人格</div>
+                                <div className="font-black text-3xl tracking-tight leading-none result-impact-highlight">
+                                    {strategyData.type}
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <div className="text-xs font-semibold text-blue-200/90 mb-1">MBTI分型</div>
+                                <div className="px-3 py-1.5 rounded-lg border border-blue-200/35 bg-blue-400/10 font-mono font-bold text-blue-100">
+                                    {mbtiTypeLabel}
+                                </div>
+                            </div>
                         </div>
                         <div className="flex gap-2 mb-5">
                             {(['philosophy', 'mechanism', 'team', 'tools'] as Dimension[]).map((key) => (
                                 <span key={key} className={`text-xs font-bold px-2 py-0.5 rounded-sm ${states[key] ? 'bg-emerald-400/16 text-emerald-300 border border-emerald-300/25' : 'bg-rose-400/16 text-rose-200 border border-rose-300/25'}`}>
-                                    {key.charAt(0).toUpperCase()}={toStateLabel(states[key])}
+                                    {key === 'philosophy' ? '理念' : key === 'mechanism' ? '机制' : key === 'team' ? '团队' : '工具'}={toDimensionCode(key, states[key])}
                                 </span>
                             ))}
                         </div>
@@ -246,7 +338,9 @@ export default function ResultPage() {
                                         fontSize: 12,
                                     }}
                                 />
-                                <Radar name="全省平均水平" dataKey="avg" stroke="#7e99c5" fill="#7e99c5" fillOpacity={0.23} />
+                                {provinceAverageScores ? (
+                                    <Radar name={provinceAverageLabel} dataKey="avg" stroke="#7e99c5" fill="#7e99c5" fillOpacity={0.23} />
+                                ) : null}
                                 <Radar name="目标医院现状" dataKey="current" stroke="#4e93ff" fill="#4e93ff" fillOpacity={0.45} />
                                 <Legend wrapperStyle={{ fontSize: 12, color: '#aac6ff', paddingTop: '10px' }} />
                             </RadarChart>

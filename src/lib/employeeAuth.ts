@@ -6,6 +6,7 @@ interface EmployeeLoginRpcHospital {
     rm?: unknown;
     dm?: unknown;
     mics?: unknown;
+    province?: unknown;
     hospital_name?: unknown;
     hospital_code?: unknown;
 }
@@ -39,6 +40,7 @@ function toHospital(item: EmployeeLoginRpcHospital): AuthorizedHospital | null {
     return {
         hospitalCode,
         hospitalName: toText(item.hospital_name),
+        province: toText(item.province),
         sg: toText(item.sg),
         rm: toText(item.rm),
         dm: toText(item.dm),
@@ -98,4 +100,3 @@ export async function verifyEmployeeAccess(employeeNameInput: string, employeeId
         hospitals,
     };
 }
-

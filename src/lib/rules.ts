@@ -1,10 +1,13 @@
 import { DIMENSIONS, QUESTIONS, STRATEGIES, THRESHOLDS } from './constants';
-import type { Dimension, Question } from './constants';
+import type { Dimension, ImportanceLevel, Question, StrategyProfile } from './constants';
+import { normalizeStrategyKey } from './algorithm';
 import { supabase } from './supabase';
 
 export interface RuleQuestion extends Question {
     weight: number;
     sortOrder: number;
+    isDecisive: boolean;
+    importance: ImportanceLevel;
 }
 
 export interface RuleVersionMeta {
@@ -20,7 +23,7 @@ export interface ActiveRule {
     version: RuleVersionMeta | null;
     questions: RuleQuestion[];
     thresholds: Record<Dimension, number>;
-    strategies: Record<string, { type: string; strategy: string }>;
+    strategies: Record<string, StrategyProfile>;
     source: 'cloud' | 'fallback';
 }
 
@@ -28,13 +31,25 @@ export interface PublishRuleInput {
     versionName?: string;
     questions: RuleQuestion[];
     thresholds: Record<Dimension, number>;
-    strategies: Record<string, { type: string; strategy: string }>;
+    strategies: Record<string, StrategyProfile>;
 }
 
 export interface PublishRuleResult {
     versionId: string;
     versionCode: string;
     versionName: string;
+}
+
+export interface UpdateActiveStrategyConfigInput {
+    thresholds: Record<Dimension, number>;
+    strategies: Record<string, StrategyProfile>;
+}
+
+export interface UpdateActiveStrategyConfigResult {
+    versionId: string;
+    versionCode: string;
+    versionName: string;
+    updatedAt: string;
 }
 
 export type RuleVersionListItem = Required<Pick<RuleVersionMeta, 'id' | 'name' | 'code' | 'publishedAt'>> &
@@ -45,6 +60,24 @@ function toNumber(value: unknown, fallback: number): number {
     return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function toNonNegativeInteger(value: unknown, fallback: number): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+        return Math.max(0, Math.round(Number(fallback)));
+    }
+    return Math.max(0, Math.round(parsed));
+}
+
+function normalizeImportance(value: unknown, fallback: ImportanceLevel = 'M'): ImportanceLevel {
+    if (typeof value === 'string') {
+        const normalized = value.trim().toUpperCase();
+        if (normalized === 'H' || normalized === 'M' || normalized === 'L') {
+            return normalized;
+        }
+    }
+    return fallback;
+}
+
 function isDimension(value: unknown): value is Dimension {
     return typeof value === 'string' && DIMENSIONS.includes(value as Dimension);
 }
@@ -52,8 +85,10 @@ function isDimension(value: unknown): value is Dimension {
 function toRuleQuestion(question: Question, sortOrder: number): RuleQuestion {
     return {
         ...question,
-        weight: toNumber(question.weight, 1),
+        weight: toNonNegativeInteger(question.weight, 1),
         sortOrder,
+        isDecisive: Boolean(question.isDecisive),
+        importance: normalizeImportance(question.importance, 'M'),
     };
 }
 
@@ -65,8 +100,10 @@ function normalizeRuleQuestions(questions: RuleQuestion[]): RuleQuestion[] {
             text: question.text.trim(),
             description: question.description.trim(),
             failureAction: question.failureAction.trim(),
-            weight: toNumber(question.weight, 1),
+            weight: toNonNegativeInteger(question.weight, 1),
             sortOrder: toNumber(question.sortOrder, index),
+            isDecisive: Boolean(question.isDecisive),
+            importance: normalizeImportance(question.importance, 'M'),
         }))
         .filter((question) => question.id.length > 0 && question.text.length > 0)
         .sort((a, b) => a.sortOrder - b.sortOrder);
@@ -124,7 +161,7 @@ async function fetchRuleByPredicate(predicate: { field: 'is_active'; value: bool
     const [questionsResult, thresholdsResult, strategiesResult] = await Promise.all([
         supabase
             .from('rule_questions')
-            .select('question_code, dimension, text, description, failure_action, weight, sort_order')
+            .select('question_code, dimension, text, description, failure_action, weight, sort_order, is_decisive, importance')
             .eq('rule_version_id', versionId)
             .order('sort_order', { ascending: true }),
         supabase
@@ -133,7 +170,7 @@ async function fetchRuleByPredicate(predicate: { field: 'is_active'; value: bool
             .eq('rule_version_id', versionId),
         supabase
             .from('rule_strategies')
-            .select('strategy_key, type, strategy')
+            .select('strategy_key, type, strategy, vps_hospital_level, mbti_persona, trait_description, guidance_direction')
             .eq('rule_version_id', versionId),
     ]);
 
@@ -149,8 +186,10 @@ async function fetchRuleByPredicate(predicate: { field: 'is_active'; value: bool
             text: typeof row.text === 'string' ? row.text : '',
             description: typeof row.description === 'string' ? row.description : '',
             failureAction: typeof row.failure_action === 'string' ? row.failure_action : '',
-            weight: toNumber(row.weight, 1),
+            weight: toNonNegativeInteger(row.weight, 1),
             sortOrder: toNumber(row.sort_order, index),
+            isDecisive: Boolean(row.is_decisive),
+            importance: normalizeImportance(row.importance, 'M'),
         }))
         .filter((row) => row.text.trim().length > 0);
 
@@ -161,16 +200,23 @@ async function fetchRuleByPredicate(predicate: { field: 'is_active'; value: bool
     const thresholds: Record<Dimension, number> = { ...THRESHOLDS };
     (thresholdsResult.data ?? []).forEach((row) => {
         if (isDimension(row.dimension)) {
-            thresholds[row.dimension] = toNumber(row.threshold, THRESHOLDS[row.dimension]);
+            thresholds[row.dimension] = toNonNegativeInteger(row.threshold, THRESHOLDS[row.dimension]);
         }
     });
 
-    const strategies: Record<string, { type: string; strategy: string }> = {};
+    const strategies: Record<string, StrategyProfile> = {};
     (strategiesResult.data ?? []).forEach((row) => {
-        if (typeof row.strategy_key === 'string' && row.strategy_key.length > 0) {
-            strategies[row.strategy_key] = {
-                type: typeof row.type === 'string' ? row.type : '未命名分型',
-                strategy: typeof row.strategy === 'string' ? row.strategy : '',
+        const normalizedKey = normalizeStrategyKey(row.strategy_key);
+        if (normalizedKey) {
+            const mbtiPersona = typeof row.mbti_persona === 'string' ? row.mbti_persona : '';
+            const guidanceDirection = typeof row.guidance_direction === 'string' ? row.guidance_direction : '';
+            strategies[normalizedKey] = {
+                type: mbtiPersona || (typeof row.type === 'string' ? row.type : '未命名分型'),
+                strategy: guidanceDirection || (typeof row.strategy === 'string' ? row.strategy : ''),
+                vpsLevel: typeof row.vps_hospital_level === 'string' ? row.vps_hospital_level : '',
+                mbtiPersona: mbtiPersona || (typeof row.type === 'string' ? row.type : ''),
+                traitDescription: typeof row.trait_description === 'string' ? row.trait_description : '',
+                guidanceDirection: guidanceDirection || (typeof row.strategy === 'string' ? row.strategy : ''),
             };
         }
     });
@@ -269,21 +315,43 @@ export async function publishRuleVersion(input: PublishRuleInput): Promise<Publi
             text: question.text,
             description: question.description,
             failure_action: question.failureAction,
-            weight: toNumber(question.weight, 1),
+            weight: toNonNegativeInteger(question.weight, 1),
             sort_order: index + 1,
+            is_decisive: Boolean(question.isDecisive),
+            importance: normalizeImportance(question.importance, 'M'),
         }));
 
         const thresholdRows = DIMENSIONS.map((dimension) => ({
             rule_version_id: versionId,
             dimension,
-            threshold: toNumber(input.thresholds[dimension], THRESHOLDS[dimension]),
+            threshold: toNonNegativeInteger(input.thresholds[dimension], THRESHOLDS[dimension]),
         }));
 
-        const strategyRows = Object.entries(input.strategies).map(([strategyKey, value]) => ({
+        const normalizedStrategies = new Map<string, StrategyProfile>();
+        Object.entries(input.strategies).forEach(([strategyKey, value]) => {
+            const normalizedKey = normalizeStrategyKey(strategyKey);
+            if (!normalizedKey) return;
+            const mbtiPersona = value.mbtiPersona?.trim() || value.type.trim() || '未命名人格';
+            const guidanceDirection = value.guidanceDirection?.trim() || value.strategy.trim();
+            normalizedStrategies.set(normalizedKey, {
+                type: mbtiPersona,
+                strategy: guidanceDirection,
+                vpsLevel: value.vpsLevel?.trim() ?? '',
+                mbtiPersona,
+                traitDescription: value.traitDescription?.trim() ?? '',
+                guidanceDirection,
+            });
+        });
+
+        const strategyRows = Array.from(normalizedStrategies.entries()).map(([strategyKey, value]) => ({
             rule_version_id: versionId,
             strategy_key: strategyKey,
-            type: value.type.trim() || '未命名分型',
-            strategy: value.strategy.trim(),
+            type: value.type,
+            strategy: value.strategy,
+            vps_hospital_level: value.vpsLevel ?? '',
+            mbti_persona: value.mbtiPersona ?? value.type,
+            trait_description: value.traitDescription ?? '',
+            guidance_direction: value.guidanceDirection ?? value.strategy,
         }));
 
         if (strategyRows.length === 0) {
@@ -324,4 +392,94 @@ export async function publishRuleVersion(input: PublishRuleInput): Promise<Publi
         }
         throw error instanceof Error ? error : new Error('发布规则版本失败。');
     }
+}
+
+export async function updateActiveStrategyConfig(input: UpdateActiveStrategyConfigInput): Promise<UpdateActiveStrategyConfigResult> {
+    const { data: activeVersionRow, error: activeVersionError } = await supabase
+        .from('rule_versions')
+        .select('id, version_name, version_code')
+        .eq('is_active', true)
+        .maybeSingle();
+
+    if (activeVersionError) {
+        throw new Error(activeVersionError.message);
+    }
+
+    if (!activeVersionRow?.id) {
+        throw new Error('未检测到云端激活题库版本。请先在「题库与权重管理」发布题库版本。');
+    }
+
+    const versionId = String(activeVersionRow.id);
+    const versionCode = typeof activeVersionRow.version_code === 'string' ? activeVersionRow.version_code : versionId;
+    const versionName = typeof activeVersionRow.version_name === 'string' ? activeVersionRow.version_name : '未命名版本';
+
+    const thresholdRows = DIMENSIONS.map((dimension) => ({
+        rule_version_id: versionId,
+        dimension,
+        threshold: toNonNegativeInteger(input.thresholds[dimension], THRESHOLDS[dimension]),
+    }));
+
+    const normalizedStrategies = new Map<string, StrategyProfile>();
+    Object.entries(input.strategies).forEach(([strategyKey, value]) => {
+        const normalizedKey = normalizeStrategyKey(strategyKey);
+        if (!normalizedKey) return;
+        const mbtiPersona = value.mbtiPersona?.trim() || value.type.trim() || '未命名人格';
+        const guidanceDirection = value.guidanceDirection?.trim() || value.strategy.trim();
+        normalizedStrategies.set(normalizedKey, {
+            type: mbtiPersona,
+            strategy: guidanceDirection,
+            vpsLevel: value.vpsLevel?.trim() ?? '',
+            mbtiPersona,
+            traitDescription: value.traitDescription?.trim() ?? '',
+            guidanceDirection,
+        });
+    });
+
+    const strategyRows = Array.from(normalizedStrategies.entries()).map(([strategyKey, value]) => ({
+        rule_version_id: versionId,
+        strategy_key: strategyKey,
+        type: value.type,
+        strategy: value.strategy,
+        vps_hospital_level: value.vpsLevel ?? '',
+        mbti_persona: value.mbtiPersona ?? value.type,
+        trait_description: value.traitDescription ?? '',
+        guidance_direction: value.guidanceDirection ?? value.strategy,
+    }));
+
+    if (strategyRows.length === 0) {
+        throw new Error('策略配置不能为空。');
+    }
+
+    const [upsertThresholdsResult, upsertStrategiesResult] = await Promise.all([
+        supabase
+            .from('rule_thresholds')
+            .upsert(thresholdRows, { onConflict: 'rule_version_id,dimension' }),
+        supabase
+            .from('rule_strategies')
+            .upsert(strategyRows, { onConflict: 'rule_version_id,strategy_key' }),
+    ]);
+
+    if (upsertThresholdsResult.error) {
+        throw new Error(upsertThresholdsResult.error.message);
+    }
+
+    if (upsertStrategiesResult.error) {
+        throw new Error(upsertStrategiesResult.error.message);
+    }
+
+    const updatedAt = new Date().toISOString();
+    const { error: touchVersionError } = await supabase
+        .from('rule_versions')
+        .update({ published_at: updatedAt })
+        .eq('id', versionId);
+    if (touchVersionError) {
+        throw new Error(touchVersionError.message);
+    }
+
+    return {
+        versionId,
+        versionCode,
+        versionName,
+        updatedAt,
+    };
 }

@@ -1,6 +1,6 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useMemo } from 'react';
-import { LayoutDashboard, Settings2, Database, LogOut, ShieldAlert, Users } from 'lucide-react';
+import { LayoutDashboard, Settings2, Database, LogOut, ShieldAlert, Users, UserCheck } from 'lucide-react';
 import { useAppStore } from '../lib/store';
 
 interface NavItem {
@@ -26,6 +26,9 @@ export default function AdminLayout() {
                 : null,
             adminSession.permissions.strategies
                 ? { to: '/admin/strategies', icon: ShieldAlert, label: '分型与策略' }
+                : null,
+            (adminSession.role === 'super_admin' || adminSession.permissions.employeeAuth)
+                ? { to: '/admin/employee-access', icon: UserCheck, label: '员工登录库' }
                 : null,
             adminSession.role === 'super_admin'
                 ? { to: '/admin/permissions', icon: Users, label: '权限管理' }

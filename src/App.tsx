@@ -13,6 +13,7 @@ const QuestionConfigPage = lazy(() => import('./admin/QuestionConfigPage'));
 const StrategyConfigPage = lazy(() => import('./admin/StrategyConfigPage'));
 const AdminLoginPage = lazy(() => import('./admin/AdminLoginPage'));
 const AdminPermissionsPage = lazy(() => import('./admin/AdminPermissionsPage'));
+const EmployeeAuthConfigPage = lazy(() => import('./admin/EmployeeAuthConfigPage'));
 
 function RequireEmployeeAuth({ children }: { children: ReactElement }) {
   const location = useLocation();
@@ -48,6 +49,20 @@ function RequireSuperAdmin({ children }: { children: ReactElement }) {
   }
 
   return children;
+}
+
+function RequireEmployeeAuthManager({ children }: { children: ReactElement }) {
+  const adminSession = useAppStore((state) => state.adminSession);
+
+  if (!adminSession) {
+    return <Navigate to="/admin/login" replace />;
+  }
+
+  if (adminSession.role === 'super_admin' || adminSession.permissions.employeeAuth) {
+    return children;
+  }
+
+  return <Navigate to="/admin/dashboard" replace />;
 }
 
 function App() {
@@ -91,6 +106,14 @@ function App() {
             <Route path="dashboard" element={<DataCenterPage />} />
             <Route path="questions" element={<QuestionConfigPage />} />
             <Route path="strategies" element={<StrategyConfigPage />} />
+            <Route
+              path="employee-access"
+              element={
+                <RequireEmployeeAuthManager>
+                  <EmployeeAuthConfigPage />
+                </RequireEmployeeAuthManager>
+              }
+            />
             <Route
               path="permissions"
               element={

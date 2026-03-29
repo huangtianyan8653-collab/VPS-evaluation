@@ -6,7 +6,7 @@ import type { Dimension } from '../lib/constants';
 import { useAppStore } from '../lib/store';
 import type { ResultData } from '../lib/store';
 import { supabase } from '../lib/supabase';
-import { getStrategyKeyFromStates, normalizeBooleanState } from '../lib/algorithm';
+import { getStrategyKeyFromStates, normalizeBooleanState, normalizeStrategyKey } from '../lib/algorithm';
 import StatusBadge from '../components/StatusBadge';
 
 interface HospitalOption {
@@ -225,7 +225,7 @@ export default function SelectPage() {
             scores,
             maxScores,
             states,
-            strategyKey: String(row.strategy_key ?? getStrategyKeyFromStates(states)),
+            strategyKey: normalizeStrategyKey(row.strategy_key) || getStrategyKeyFromStates(states),
             strategyType: row.strategy_type ? String(row.strategy_type) : undefined,
             strategyText: row.strategy_text ? String(row.strategy_text) : undefined,
             ruleVersionId: row.rule_version_id ? String(row.rule_version_id) : null,

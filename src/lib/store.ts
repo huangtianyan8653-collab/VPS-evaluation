@@ -10,6 +10,7 @@ interface SurveyDraft {
 export interface AuthorizedHospital {
     hospitalCode: string;
     hospitalName: string;
+    province?: string;
     sg: string;
     rm: string;
     dm: string;
@@ -28,6 +29,7 @@ export interface AdminPermissions {
     dataManage: boolean;
     questions: boolean;
     strategies: boolean;
+    employeeAuth: boolean;
 }
 
 export interface AdminSession {
@@ -56,13 +58,13 @@ export interface ResultData {
 interface AppState {
     drafts: Record<string, SurveyDraft>; // hospitalId -> draft
     results: Record<string, ResultData>; // hospitalId -> result
-    publishedQuestions: Question[] | null; // null = 使用内置默认题库
+    publishedQuestions: Question[] | null; // 后台题库草稿（跨页面联动）；null=无草稿
     employeeSession: EmployeeSession | null;
     adminSession: AdminSession | null;
     saveDraft: (hospitalId: string, answers: Record<string, boolean>) => void;
     saveResult: (hospitalId: string, result: ResultData) => void;
     clearDraft: (hospitalId: string) => void;
-    publishQuestions: (questions: Question[]) => void;
+    publishQuestions: (questions: Question[] | null) => void;
     saveEmployeeSession: (session: EmployeeSession) => void;
     clearEmployeeSession: () => void;
     saveAdminSession: (session: AdminSession) => void;
@@ -96,9 +98,9 @@ export const useAppStore = create<AppState>()(
             clearEmployeeSession: () =>
                 set({ employeeSession: null }),
             saveAdminSession: (session) =>
-                set({ adminSession: session }),
+                set({ adminSession: session, publishedQuestions: null }),
             clearAdminSession: () =>
-                set({ adminSession: null }),
+                set({ adminSession: null, publishedQuestions: null }),
             clearResults: () =>
                 set({ results: {} }),
             clearDrafts: () =>

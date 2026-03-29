@@ -28,6 +28,7 @@ function normalizePermissions(raw: unknown): AdminPermissions {
         dataManage: toBoolean(source.manage_data, false),
         questions: toBoolean(source.questions, false),
         strategies: toBoolean(source.strategies, false),
+        employeeAuth: toBoolean(source.employee_auth, false),
     };
 }
 
@@ -49,7 +50,7 @@ export async function verifyAdminAccess(employeeNameInput: string, employeeIdInp
             employeeName,
             employeeId,
             role: '',
-            permissions: { dashboard: false, dataManage: false, questions: false, strategies: false },
+            permissions: { dashboard: false, dataManage: false, questions: false, strategies: false, employeeAuth: false },
         };
     }
 

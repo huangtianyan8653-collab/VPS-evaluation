@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Loader2, Plus, RefreshCw, Save, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Loader2, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../lib/store';
 
@@ -14,6 +14,7 @@ interface AdminAccountRow {
     canManageData: boolean;
     canManageQuestions: boolean;
     canManageStrategies: boolean;
+    canManageEmployeeAuth: boolean;
     isActive: boolean;
     updatedAt: string;
 }
@@ -32,6 +33,7 @@ interface NewAccountForm {
     canManageData: boolean;
     canManageQuestions: boolean;
     canManageStrategies: boolean;
+    canManageEmployeeAuth: boolean;
     isActive: boolean;
 }
 
@@ -60,6 +62,7 @@ function normalizeAccount(row: Record<string, unknown>): AdminAccountRow {
         canManageData: toBoolean(row.can_manage_data),
         canManageQuestions: toBoolean(row.can_manage_questions),
         canManageStrategies: toBoolean(row.can_manage_strategies),
+        canManageEmployeeAuth: toBoolean(row.can_manage_employee_auth),
         isActive: toBoolean(row.is_active, true),
         updatedAt: toText(row.updated_at),
     };
@@ -74,6 +77,7 @@ function withRolePreset(input: NewAccountForm | AdminAccountRow, role: AdminRole
             canManageData: true,
             canManageQuestions: true,
             canManageStrategies: true,
+            canManageEmployeeAuth: true,
         };
     }
 
@@ -85,6 +89,7 @@ function withRolePreset(input: NewAccountForm | AdminAccountRow, role: AdminRole
             canManageData: false,
             canManageQuestions: false,
             canManageStrategies: false,
+            canManageEmployeeAuth: false,
         };
     }
 
@@ -103,8 +108,12 @@ const DEFAULT_NEW_FORM: NewAccountForm = {
     canManageData: false,
     canManageQuestions: false,
     canManageStrategies: false,
+    canManageEmployeeAuth: false,
     isActive: true,
 };
+
+const LOCKED_ADMIN_EMPLOYEE_CODE = 'HUANGT39';
+const LOCKED_ADMIN_EMPLOYEE_NAME = '黄天妍';
 
 export default function AdminPermissionsPage() {
     const adminSession = useAppStore((state) => state.adminSession);
@@ -114,16 +123,21 @@ export default function AdminPermissionsPage() {
     const [isCreating, setIsCreating] = useState(false);
     const [savingRowId, setSavingRowId] = useState<string | null>(null);
     const [newForm, setNewForm] = useState<NewAccountForm>(DEFAULT_NEW_FORM);
+    const [identitySearchText, setIdentitySearchText] = useState('');
+    const [showIdentitySuggestions, setShowIdentitySuggestions] = useState(false);
     const [errorText, setErrorText] = useState('');
     const [successText, setSuccessText] = useState('');
 
     const canManagePermissions = adminSession?.role === 'super_admin';
+    const isLockedAdmin = (row: AdminAccountRow) =>
+        row.employeeCode.trim().toLowerCase() === LOCKED_ADMIN_EMPLOYEE_CODE.toLowerCase()
+        || row.employeeName.trim() === LOCKED_ADMIN_EMPLOYEE_NAME;
 
     const loadData = useCallback(async () => {
         const [accountsResult, identitiesResult] = await Promise.all([
             supabase
                 .from('admin_accounts')
-                .select('id, employee_code, employee_name, role, can_view_dashboard, can_manage_data, can_manage_questions, can_manage_strategies, is_active, updated_at')
+                .select('id, employee_code, employee_name, role, can_view_dashboard, can_manage_data, can_manage_questions, can_manage_strategies, can_manage_employee_auth, is_active, updated_at')
                 .order('employee_code', { ascending: true }),
             supabase
                 .from('employee_identities')
@@ -168,6 +182,17 @@ export default function AdminPermissionsPage() {
         return employeeIdentities.filter((item) => item.isActive);
     }, [employeeIdentities]);
 
+    const identitySearchResults = useMemo(() => {
+        const keyword = identitySearchText.trim().toLowerCase();
+        if (!keyword) return activeIdentityOptions.slice(0, 8);
+        return activeIdentityOptions
+            .filter((item) =>
+                item.employeeName.toLowerCase().includes(keyword)
+                || item.employeeCode.toLowerCase().includes(keyword),
+            )
+            .slice(0, 12);
+    }, [activeIdentityOptions, identitySearchText]);
+
     const updateRow = (id: string, patch: Partial<AdminAccountRow>) => {
         setAccounts((prev) => prev.map((row) => row.id === id ? { ...row, ...patch } : row));
     };
@@ -185,6 +210,10 @@ export default function AdminPermissionsPage() {
     const handleSaveRow = async (row: AdminAccountRow) => {
         if (!canManagePermissions) return;
         if (!row.id) return;
+        if (isLockedAdmin(row)) {
+            setErrorText(`已锁定账号：${LOCKED_ADMIN_EMPLOYEE_NAME}（${LOCKED_ADMIN_EMPLOYEE_CODE}）不允许修改。`);
+            return;
+        }
 
         setSavingRowId(row.id);
         setErrorText('');
@@ -200,6 +229,7 @@ export default function AdminPermissionsPage() {
                 can_manage_data: normalized.canManageData,
                 can_manage_questions: normalized.canManageQuestions,
                 can_manage_strategies: normalized.canManageStrategies,
+                can_manage_employee_auth: normalized.canManageEmployeeAuth,
                 is_active: normalized.isActive,
                 updated_at: new Date().toISOString(),
             })
@@ -212,6 +242,38 @@ export default function AdminPermissionsPage() {
         }
 
         setSuccessText(`已保存：${row.employeeName} (${row.employeeCode})`);
+        setSavingRowId(null);
+        setIsLoading(true);
+        await loadData();
+    };
+
+    const handleDeleteRow = async (row: AdminAccountRow) => {
+        if (!canManagePermissions) return;
+        if (!row.id) return;
+        if (isLockedAdmin(row)) {
+            setErrorText(`已锁定账号：${LOCKED_ADMIN_EMPLOYEE_NAME}（${LOCKED_ADMIN_EMPLOYEE_CODE}）不允许删除。`);
+            return;
+        }
+
+        const confirmed = window.confirm(`确认删除管理员 ${row.employeeName}（${row.employeeCode}）吗？此操作不可撤销。`);
+        if (!confirmed) return;
+
+        setSavingRowId(row.id);
+        setErrorText('');
+        setSuccessText('');
+
+        const { error } = await supabase
+            .from('admin_accounts')
+            .delete()
+            .eq('id', row.id);
+
+        if (error) {
+            setErrorText(`删除失败（${row.employeeName}）：${error.message}`);
+            setSavingRowId(null);
+            return;
+        }
+
+        setSuccessText(`已删除管理员：${row.employeeName} (${row.employeeCode})`);
         setSavingRowId(null);
         setIsLoading(true);
         await loadData();
@@ -244,6 +306,7 @@ export default function AdminPermissionsPage() {
                 can_manage_data: normalized.canManageData,
                 can_manage_questions: normalized.canManageQuestions,
                 can_manage_strategies: normalized.canManageStrategies,
+                can_manage_employee_auth: normalized.canManageEmployeeAuth,
                 is_active: normalized.isActive,
                 updated_at: new Date().toISOString(),
             }, { onConflict: 'employee_code' });
@@ -256,6 +319,8 @@ export default function AdminPermissionsPage() {
 
         setSuccessText(`已保存管理员：${employeeName} (${employeeCode})`);
         setNewForm(DEFAULT_NEW_FORM);
+        setIdentitySearchText('');
+        setShowIdentitySuggestions(false);
         setIsCreating(false);
         setIsLoading(true);
         await loadData();
@@ -277,7 +342,7 @@ export default function AdminPermissionsPage() {
                 <div className="flex items-center justify-between gap-4">
                     <div>
                         <h1 className="med-title-xl text-slate-800">后台权限管理</h1>
-                        <p className="med-subtitle text-slate-600 mt-1">可视化配置：看数据、改数据、改题目、改策略。</p>
+                        <p className="med-subtitle text-slate-600 mt-1">可视化配置：看数据、改数据、改题目、改策略、改员工库。</p>
                     </div>
                     <button
                         onClick={() => {
@@ -303,24 +368,56 @@ export default function AdminPermissionsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                     <div>
                         <div className="text-xs text-slate-500 mb-1">从员工库选择（可选）</div>
-                        <select
-                            value=""
-                            onChange={(event) => {
-                                const code = event.target.value;
-                                const selected = activeIdentityOptions.find((item) => item.employeeCode === code);
-                                if (!selected) return;
-                                setNewForm((prev) => ({ ...prev, employeeCode: selected.employeeCode, employeeName: selected.employeeName }));
-                                event.target.value = '';
-                            }}
-                            className="w-full med-input rounded-lg px-3 py-2 text-sm"
-                        >
-                            <option value="">选择员工并自动填充</option>
-                            {activeIdentityOptions.map((item) => (
-                                <option key={item.employeeCode} value={item.employeeCode}>
-                                    {item.employeeName} ({item.employeeCode})
-                                </option>
-                            ))}
-                        </select>
+                        <div className="relative">
+                            <div className="w-full med-input rounded-lg px-3 py-2 text-sm flex items-center gap-2">
+                                <Search className="w-4 h-4 text-slate-400 shrink-0" />
+                                <input
+                                    value={identitySearchText}
+                                    onChange={(event) => {
+                                        setIdentitySearchText(event.target.value);
+                                        setShowIdentitySuggestions(true);
+                                    }}
+                                    onFocus={() => setShowIdentitySuggestions(true)}
+                                    onBlur={() => {
+                                        window.setTimeout(() => setShowIdentitySuggestions(false), 120);
+                                    }}
+                                    className="w-full bg-transparent outline-none"
+                                    placeholder="搜索姓名或员工号并自动填充"
+                                />
+                                {identitySearchText && (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setIdentitySearchText('');
+                                            setShowIdentitySuggestions(false);
+                                        }}
+                                        className="text-slate-400 hover:text-slate-600"
+                                    >
+                                        <X className="w-4 h-4" />
+                                    </button>
+                                )}
+                            </div>
+
+                            {showIdentitySuggestions && identitySearchResults.length > 0 && (
+                                <div className="absolute z-20 mt-1 w-full rounded-lg border border-slate-200 bg-white shadow-xl max-h-56 overflow-auto">
+                                    {identitySearchResults.map((item) => (
+                                        <button
+                                            key={item.employeeCode}
+                                            type="button"
+                                            onClick={() => {
+                                                setNewForm((prev) => ({ ...prev, employeeCode: item.employeeCode, employeeName: item.employeeName }));
+                                                setIdentitySearchText(`${item.employeeName} (${item.employeeCode})`);
+                                                setShowIdentitySuggestions(false);
+                                            }}
+                                            className="w-full text-left px-3 py-2 hover:bg-slate-50 text-sm"
+                                        >
+                                            <span className="text-slate-800 font-medium">{item.employeeName}</span>
+                                            <span className="ml-2 text-slate-500 font-mono">{item.employeeCode}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
                     <div>
                         <div className="text-xs text-slate-500 mb-1">员工姓名</div>
@@ -354,11 +451,12 @@ export default function AdminPermissionsPage() {
                     </div>
                 </div>
 
-                <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+                <div className="mt-4 grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
                     <label className="inline-flex items-center gap-2"><input type="checkbox" checked={newForm.canViewDashboard} onChange={(e) => setNewForm((p) => ({ ...p, canViewDashboard: e.target.checked }))} />看数据</label>
                     <label className="inline-flex items-center gap-2"><input type="checkbox" checked={newForm.canManageData} onChange={(e) => setNewForm((p) => ({ ...p, canManageData: e.target.checked }))} />改数据</label>
                     <label className="inline-flex items-center gap-2"><input type="checkbox" checked={newForm.canManageQuestions} onChange={(e) => setNewForm((p) => ({ ...p, canManageQuestions: e.target.checked }))} />改题目</label>
                     <label className="inline-flex items-center gap-2"><input type="checkbox" checked={newForm.canManageStrategies} onChange={(e) => setNewForm((p) => ({ ...p, canManageStrategies: e.target.checked }))} />改策略</label>
+                    <label className="inline-flex items-center gap-2"><input type="checkbox" checked={newForm.canManageEmployeeAuth} onChange={(e) => setNewForm((p) => ({ ...p, canManageEmployeeAuth: e.target.checked }))} />改员工库</label>
                     <label className="inline-flex items-center gap-2"><input type="checkbox" checked={newForm.isActive} onChange={(e) => setNewForm((p) => ({ ...p, isActive: e.target.checked }))} />账号启用</label>
                 </div>
 
@@ -393,6 +491,7 @@ export default function AdminPermissionsPage() {
                                     <th className="text-center px-3 py-3 font-semibold">改数据</th>
                                     <th className="text-center px-3 py-3 font-semibold">改题目</th>
                                     <th className="text-center px-3 py-3 font-semibold">改策略</th>
+                                    <th className="text-center px-3 py-3 font-semibold">改员工库</th>
                                     <th className="text-center px-3 py-3 font-semibold">启用</th>
                                     <th className="text-center px-3 py-3 font-semibold">操作</th>
                                 </tr>
@@ -402,12 +501,18 @@ export default function AdminPermissionsPage() {
                                     <tr key={row.id}>
                                         <td className="px-4 py-3">
                                             <div className="font-medium text-slate-800">{row.employeeName}</div>
-                                            <div className="text-xs text-slate-400 font-mono">{row.employeeCode}</div>
+                                            <div className="text-xs text-slate-400 font-mono flex items-center gap-2">
+                                                <span>{row.employeeCode}</span>
+                                                {isLockedAdmin(row) && (
+                                                    <span className="rounded-full px-2 py-0.5 text-[10px] bg-amber-100 text-amber-700 border border-amber-200">已锁定</span>
+                                                )}
+                                            </div>
                                         </td>
                                         <td className="px-4 py-3">
                                             <select
                                                 value={row.role}
                                                 onChange={(event) => handleRoleChange(row.id, event.target.value as AdminRole)}
+                                                disabled={isLockedAdmin(row)}
                                                 className="med-input rounded-md px-2 py-1 text-sm"
                                             >
                                                 <option value="viewer">viewer</option>
@@ -416,35 +521,48 @@ export default function AdminPermissionsPage() {
                                             </select>
                                         </td>
                                         <td className="text-center px-3 py-3">
-                                            <input type="checkbox" checked={row.canViewDashboard} onChange={(e) => updateRow(row.id, { canViewDashboard: e.target.checked })} />
+                                            <input type="checkbox" checked={row.canViewDashboard} disabled={isLockedAdmin(row)} onChange={(e) => updateRow(row.id, { canViewDashboard: e.target.checked })} />
                                         </td>
                                         <td className="text-center px-3 py-3">
-                                            <input type="checkbox" checked={row.canManageData} onChange={(e) => updateRow(row.id, { canManageData: e.target.checked })} />
+                                            <input type="checkbox" checked={row.canManageData} disabled={isLockedAdmin(row)} onChange={(e) => updateRow(row.id, { canManageData: e.target.checked })} />
                                         </td>
                                         <td className="text-center px-3 py-3">
-                                            <input type="checkbox" checked={row.canManageQuestions} onChange={(e) => updateRow(row.id, { canManageQuestions: e.target.checked })} />
+                                            <input type="checkbox" checked={row.canManageQuestions} disabled={isLockedAdmin(row)} onChange={(e) => updateRow(row.id, { canManageQuestions: e.target.checked })} />
                                         </td>
                                         <td className="text-center px-3 py-3">
-                                            <input type="checkbox" checked={row.canManageStrategies} onChange={(e) => updateRow(row.id, { canManageStrategies: e.target.checked })} />
+                                            <input type="checkbox" checked={row.canManageStrategies} disabled={isLockedAdmin(row)} onChange={(e) => updateRow(row.id, { canManageStrategies: e.target.checked })} />
                                         </td>
                                         <td className="text-center px-3 py-3">
-                                            <input type="checkbox" checked={row.isActive} onChange={(e) => updateRow(row.id, { isActive: e.target.checked })} />
+                                            <input type="checkbox" checked={row.canManageEmployeeAuth} disabled={isLockedAdmin(row)} onChange={(e) => updateRow(row.id, { canManageEmployeeAuth: e.target.checked })} />
                                         </td>
                                         <td className="text-center px-3 py-3">
-                                            <button
-                                                onClick={() => void handleSaveRow(row)}
-                                                disabled={savingRowId === row.id}
-                                                className="med-btn-sm med-button-primary text-xs disabled:opacity-50"
-                                            >
-                                                {savingRowId === row.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                                                保存
-                                            </button>
+                                            <input type="checkbox" checked={row.isActive} disabled={isLockedAdmin(row)} onChange={(e) => updateRow(row.id, { isActive: e.target.checked })} />
+                                        </td>
+                                        <td className="text-center px-3 py-3">
+                                            <div className="flex items-center justify-center gap-2">
+                                                <button
+                                                    onClick={() => void handleSaveRow(row)}
+                                                    disabled={savingRowId === row.id || isLockedAdmin(row)}
+                                                    className="med-btn-sm med-button-primary text-xs disabled:opacity-50"
+                                                >
+                                                    {savingRowId === row.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                                                    保存
+                                                </button>
+                                                <button
+                                                    onClick={() => void handleDeleteRow(row)}
+                                                    disabled={savingRowId === row.id || isLockedAdmin(row)}
+                                                    className="med-btn-sm text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 disabled:opacity-50 px-2.5 py-1.5 inline-flex items-center gap-1.5"
+                                                >
+                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                    删除
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                 ))}
                                 {accounts.length === 0 && (
                                     <tr>
-                                        <td colSpan={8} className="text-center p-8 text-slate-400">
+                                        <td colSpan={9} className="text-center p-8 text-slate-400">
                                             暂无管理员记录
                                         </td>
                                     </tr>
