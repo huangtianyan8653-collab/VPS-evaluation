@@ -93,7 +93,7 @@ function parseMbtiKey(value: unknown): string | null {
         return normalized || null;
     }
 
-    const compact = raw.replace(/[\/\s]+/g, ',');
+    const compact = raw.replace(/[/\s]+/g, ',');
     const normalized = normalizeStrategyKey(compact);
     return normalized || null;
 }

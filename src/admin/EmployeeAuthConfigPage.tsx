@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, FileUp, Loader2, RefreshCw, Upload } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { supabase } from '../lib/supabase';
+import { resolvedSupabaseUrl, supabase } from '../lib/supabase';
 import { useAppStore } from '../lib/store';
 
 interface DataSummary {
@@ -72,6 +72,7 @@ interface ParsedArchitectureFile {
 
 const PREVIEW_LIMIT = 12;
 const CHUNK_SIZE = 500;
+const SUPABASE_URL = resolvedSupabaseUrl;
 
 function toText(value: unknown): string {
     if (typeof value === 'string') return value.trim();
@@ -117,7 +118,54 @@ function readCell(row: Record<string, unknown>, key: string | null): string {
 
 function toErrorMessage(error: unknown): string {
     if (error instanceof Error) return error.message;
+    if (typeof error === 'string') return error || '未知错误';
+
+    if (error && typeof error === 'object') {
+        const payload = error as {
+            message?: unknown;
+            details?: unknown;
+            hint?: unknown;
+            code?: unknown;
+            error_description?: unknown;
+        };
+
+        const toSafeText = (value: unknown): string => {
+            if (typeof value === 'string') return value.trim();
+            if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+            return '';
+        };
+
+        const message = toSafeText(payload.message) || toSafeText(payload.error_description);
+        const details = toSafeText(payload.details);
+        const hint = toSafeText(payload.hint);
+        const code = toSafeText(payload.code);
+
+        const chunks: string[] = [];
+        if (message) chunks.push(message);
+        if (details) chunks.push(`details: ${details}`);
+        if (hint) chunks.push(`hint: ${hint}`);
+        if (code) chunks.push(`code: ${code}`);
+        if (chunks.length > 0) return chunks.join(' | ');
+
+        try {
+            return JSON.stringify(error);
+        } catch {
+            return '未知错误';
+        }
+    }
+
     return '未知错误';
+}
+
+function isLikelyFetchNetworkError(message: string): boolean {
+    return /failed to fetch|fetch failed|networkerror|load failed|ssl_error|dns|resolve host/i.test(message.toLowerCase());
+}
+
+function buildSupabaseNetworkHint(): string {
+    const restEndpoint = SUPABASE_URL
+        ? `${SUPABASE_URL.replace(/\/+$/, '')}/rest/v1/`
+        : '(未配置 VITE_SUPABASE_URL / VITE_SUPABASE_PROJECT_URL)';
+    return `无法连接 Supabase 云端（网络/代理问题）。请先确认可打开 ${restEndpoint}（正常会返回 “No API key found in request”），再重试导入。`;
 }
 
 function splitChunks<T>(items: T[], size: number): T[][] {
@@ -431,6 +479,7 @@ export default function EmployeeAuthConfigPage() {
             setParsedLogin(result);
             setSuccessText(`登录信息表解析成功：${result.parsedRows} 条员工。`);
         } catch (error) {
+            console.error('[EmployeeAuthConfigPage] parse login file failed', error);
             setErrorText(`登录信息表解析失败：${toErrorMessage(error)}`);
         } finally {
             setIsParsingLogin(false);
@@ -453,6 +502,7 @@ export default function EmployeeAuthConfigPage() {
             setParsedArchitecture(result);
             setSuccessText(`架构表解析成功：${result.parsedRows} 条权限。`);
         } catch (error) {
+            console.error('[EmployeeAuthConfigPage] parse architecture file failed', error);
             setErrorText(`架构表解析失败：${toErrorMessage(error)}`);
         } finally {
             setIsParsingArchitecture(false);
@@ -495,7 +545,13 @@ export default function EmployeeAuthConfigPage() {
             setSuccessText(`登录信息表导入完成：${parsedLogin.rows.length} 条员工。`);
             await loadSummary();
         } catch (error) {
-            setErrorText(`登录信息表导入失败：${toErrorMessage(error)}`);
+            console.error('[EmployeeAuthConfigPage] import login file failed', error);
+            const message = toErrorMessage(error);
+            if (isLikelyFetchNetworkError(message)) {
+                setErrorText(`登录信息表导入失败：${buildSupabaseNetworkHint()}`);
+            } else {
+                setErrorText(`登录信息表导入失败：${message}`);
+            }
         } finally {
             setIsImportingLogin(false);
         }
@@ -537,9 +593,12 @@ export default function EmployeeAuthConfigPage() {
             setSuccessText(`架构表导入完成：${parsedArchitecture.rows.length} 条权限。`);
             await loadSummary();
         } catch (error) {
+            console.error('[EmployeeAuthConfigPage] import architecture file failed', error);
             const message = toErrorMessage(error);
             if (/province.*does not exist|column .*province/i.test(message)) {
                 setErrorText('架构表导入失败：数据库缺少 province 字段，请先执行迁移脚本 20260323_employee_permissions_province.sql。');
+            } else if (isLikelyFetchNetworkError(message)) {
+                setErrorText(`架构表导入失败：${buildSupabaseNetworkHint()}`);
             } else {
                 setErrorText(`架构表导入失败：${message}`);
             }

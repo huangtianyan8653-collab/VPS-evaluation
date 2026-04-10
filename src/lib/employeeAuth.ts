@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { ensureSupabaseConfigured, supabase } from './supabase';
 import type { AuthorizedHospital } from './store';
 
 interface EmployeeLoginRpcHospital {
@@ -59,6 +59,8 @@ function dedupeHospitals(items: AuthorizedHospital[]): AuthorizedHospital[] {
 }
 
 export async function verifyEmployeeAccess(employeeNameInput: string, employeeIdInput: string): Promise<VerifyEmployeeAccessResult> {
+    ensureSupabaseConfigured();
+
     const employeeName = normalizeText(employeeNameInput);
     const employeeId = normalizeText(employeeIdInput);
 

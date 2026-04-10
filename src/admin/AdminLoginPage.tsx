@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { ShieldCheck, UserRound, BadgeCheck, Loader2, LogIn } from 'lucide-react';
 import { useAppStore } from '../lib/store';
 import { verifyAdminAccess } from '../lib/adminAuth';
+import { getSupabaseMissingConfigMessage, isSupabaseConfigured } from '../lib/supabase';
 
 export default function AdminLoginPage() {
     const navigate = useNavigate();
@@ -21,8 +22,15 @@ export default function AdminLoginPage() {
     }, [adminSession, navigate]);
 
     const canSubmit = useMemo(() => {
-        return employeeName.trim().length > 0 && employeeId.trim().length > 0 && !isSubmitting;
+        return employeeName.trim().length > 0
+            && employeeId.trim().length > 0
+            && !isSubmitting
+            && isSupabaseConfigured;
     }, [employeeName, employeeId, isSubmitting]);
+
+    const cloudConfigHint = useMemo(() => {
+        return isSupabaseConfigured ? '' : getSupabaseMissingConfigMessage();
+    }, []);
 
     const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -90,6 +98,12 @@ export default function AdminLoginPage() {
                 </div>
 
                 <form className="px-7 py-7 space-y-4" onSubmit={handleSubmit}>
+                    {cloudConfigHint && (
+                        <div className="rounded-xl border border-amber-300 bg-amber-50 text-amber-800 text-sm px-3 py-2.5">
+                            {cloudConfigHint}
+                        </div>
+                    )}
+
                     <label className="block">
                         <div className="text-sm font-semibold text-slate-700 mb-2">员工姓名</div>
                         <div className="flex items-center gap-2 rounded-xl px-3 py-2.5 med-input">

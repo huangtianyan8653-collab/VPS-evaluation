@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ChevronLeft, Info, HelpCircle, Check, X, Loader2 } from 'lucide-react';
+import { ChevronLeft, Check, X, Loader2 } from 'lucide-react';
 import { MOCK_HOSPITALS } from '../lib/constants';
 import type { Dimension } from '../lib/constants';
 import { isHigh, getStrategyKey } from '../lib/algorithm';
@@ -9,6 +9,8 @@ import type { ResultData } from '../lib/store';
 import { supabase } from '../lib/supabase';
 import { fetchActiveRule, getFallbackRule } from '../lib/rules';
 import type { ActiveRule } from '../lib/rules';
+import { evaluateDimensionQuestions } from '../lib/surveyEvaluation';
+import type { DimensionEvaluation } from '../lib/surveyEvaluation';
 
 const DIMENSIONS: { id: Dimension; label: string }[] = [
     { id: 'philosophy', label: '理念' },
@@ -17,83 +19,12 @@ const DIMENSIONS: { id: Dimension; label: string }[] = [
     { id: 'tools', label: '工具' },
 ];
 
-function normalizeWeight(value: unknown, fallback = 1): number {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return Math.max(0, Math.round(fallback));
-    return Math.max(0, Math.round(parsed));
-}
-
-interface DimensionEvaluation {
-    visibleQuestions: ActiveRule['questions'];
-    requiredCount: number;
-    answeredCount: number;
-    isComplete: boolean;
-    score: number;
-    maxScore: number;
-    forcedTrue: boolean;
-    failureActions: string[];
-}
-
-function evaluateDimensionQuestions(
-    dimensionQuestions: ActiveRule['questions'],
-    answers: Record<string, boolean>
-): DimensionEvaluation {
-    const visibleQuestions: ActiveRule['questions'] = [];
-    const failureActions: string[] = [];
-    let score = 0;
-    let maxScore = 0;
-    let answeredCount = 0;
-    let forcedTrue = false;
-
-    for (const question of dimensionQuestions) {
-        visibleQuestions.push(question);
-        const weight = normalizeWeight(question.weight, 1);
-        maxScore += weight;
-
-        const hasAnswer = answers[question.id] !== undefined;
-        if (hasAnswer) {
-            answeredCount += 1;
-            if (answers[question.id] === true) {
-                score += weight;
-            } else {
-                const action = question.failureAction.trim();
-                const importance = (question.importance ?? 'M').toUpperCase();
-                if ((importance === 'H' || importance === 'M') && action.length > 0) {
-                    failureActions.push(action);
-                }
-            }
-        }
-
-        if (question.isDecisive) {
-            if (answers[question.id] === false) {
-                forcedTrue = true;
-                break;
-            }
-            if (answers[question.id] !== true) {
-                break;
-            }
-        }
-    }
-
-    return {
-        visibleQuestions,
-        requiredCount: visibleQuestions.length,
-        answeredCount,
-        isComplete: answeredCount === visibleQuestions.length,
-        score,
-        maxScore,
-        forcedTrue,
-        failureActions,
-    };
-}
-
 export default function SurveyPage() {
     const { hospitalId } = useParams();
     const navigate = useNavigate();
     const { drafts, saveDraft, saveResult, clearDraft, employeeSession } = useAppStore();
 
     const [activeTab, setActiveTab] = useState<number>(0);
-    const [showInfo, setShowInfo] = useState<string | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isRuleLoading, setIsRuleLoading] = useState(true);
     const [activeRule, setActiveRule] = useState<ActiveRule>(getFallbackRule());
@@ -356,14 +287,14 @@ export default function SurveyPage() {
     }
 
     return (
-        <div className="flex flex-col min-h-screen pb-safe flow-page text-white">
+        <div className="flex flex-col min-h-screen pb-safe flow-page flow-page-survey-unified text-white">
             <div className="px-5 py-4 pt-12 flex items-center sticky top-0 z-20 border-b border-white/20 bg-white/10 backdrop-blur-md">
                 <button onClick={() => navigate(-1)} className="p-2 -ml-2 text-white/90 active:bg-white/15 rounded-full transition-colors">
                     <ChevronLeft className="w-6 h-6" />
                 </button>
                 <div className="flex-1 ml-2">
                     <h1 className="med-title-md text-white">{hospital.name}</h1>
-                    <p className="text-blue-100/90 med-eyebrow">VPS 评估调研</p>
+                    <p className="text-blue-100/90 med-eyebrow">VPS快速分型</p>
                 </div>
             </div>
 
@@ -395,8 +326,7 @@ export default function SurveyPage() {
             <div className="flex-1 px-5 py-6 overflow-y-auto relative z-10">
                 <div className="mb-7 flex justify-between items-end">
                     <div>
-                        <h2 className="med-title-lg text-white">{DIMENSIONS[activeTab].label} 维度评估</h2>
-                        <p className="med-subtitle-light mt-1.5">请根据医院实际情况如实填写</p>
+                        <h2 className="med-title-lg text-white">{DIMENSIONS[activeTab].label}维度快速诊断</h2>
                     </div>
                     <div className="text-sm font-semibold text-white bg-white/18 px-3 py-1 rounded-full border border-white/30">
                         {currentDimAnswered} / {currentDimLength}
@@ -417,40 +347,30 @@ export default function SurveyPage() {
                             <div key={q.id} className="rounded-[1.7rem] p-6 relative overflow-hidden border border-white/24 bg-white/[0.14] backdrop-blur-sm">
                                 <div className="absolute -right-10 -top-10 w-28 h-28 rounded-full bg-white/14 blur-2xl" />
                                 <div className="flex items-start gap-3">
-                                    <div className="flex-1 text-white font-semibold leading-relaxed text-[1.03rem] tracking-[0.01em]">
+                                    <div className="flex-1 text-white font-medium leading-relaxed text-[0.94rem] tracking-[0.005em]">
                                         {q.text}
                                     </div>
-                                    <button onClick={() => setShowInfo(showInfo === q.id ? null : q.id)} className="text-blue-100 hover:text-white p-1 shrink-0">
-                                        <HelpCircle className="w-5 h-5" />
-                                    </button>
                                 </div>
-
-                                {showInfo === q.id && (
-                                    <div className="mt-3 bg-white/90 border border-blue-100 rounded-xl p-3 text-sm text-blue-800 flex items-start gap-2">
-                                        <Info className="w-4 h-4 text-blue-600 mt-0.5 shrink-0" />
-                                        <span className="leading-relaxed">{q.description}</span>
-                                    </div>
-                                )}
 
                                 <div className="mt-6 grid grid-cols-2 gap-3">
                                     <button
                                         onClick={() => handleAnswer(q.id, true)}
-                                        className={`flex items-center justify-center gap-2 py-3 rounded-xl font-semibold transition-all ${isYes
+                                        className={`flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all ${isYes
                                             ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/30 border border-emerald-200'
                                             : 'bg-white/14 text-white hover:bg-white/22 border border-white/30'
                                             }`}
                                     >
-                                        <Check className={`w-5 h-5 ${isYes ? 'text-white' : 'text-blue-100'}`} />
+                                        <Check className={`w-4 h-4 ${isYes ? 'text-white' : 'text-blue-100'}`} />
                                         是 (Yes)
                                     </button>
                                     <button
                                         onClick={() => handleAnswer(q.id, false)}
-                                        className={`flex items-center justify-center gap-2 py-3 rounded-xl font-semibold transition-all ${isNo
+                                        className={`flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all ${isNo
                                             ? 'bg-rose-600 text-white shadow-md shadow-rose-950/30 border border-rose-200'
                                             : 'bg-white/14 text-white hover:bg-white/22 border border-white/30'
                                             }`}
                                     >
-                                        <X className={`w-5 h-5 ${isNo ? 'text-white' : 'text-blue-100'}`} />
+                                        <X className={`w-4 h-4 ${isNo ? 'text-white' : 'text-blue-100'}`} />
                                         否 (No)
                                     </button>
                                 </div>

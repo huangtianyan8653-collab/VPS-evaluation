@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { ShieldCheck, UserRound, BadgeCheck, Loader2, LogIn } from 'lucide-react';
 import { useAppStore } from '../lib/store';
 import { verifyEmployeeAccess } from '../lib/employeeAuth';
+import { getSupabaseMissingConfigMessage, isSupabaseConfigured } from '../lib/supabase';
 
 export default function AuthPage() {
     const navigate = useNavigate();
@@ -21,8 +22,15 @@ export default function AuthPage() {
     }, [employeeSession, navigate]);
 
     const canSubmit = useMemo(() => {
-        return employeeName.trim().length > 0 && employeeId.trim().length > 0 && !isSubmitting;
+        return employeeName.trim().length > 0
+            && employeeId.trim().length > 0
+            && !isSubmitting
+            && isSupabaseConfigured;
     }, [employeeName, employeeId, isSubmitting]);
+
+    const cloudConfigHint = useMemo(() => {
+        return isSupabaseConfigured ? '' : getSupabaseMissingConfigMessage();
+    }, []);
 
     const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -69,14 +77,14 @@ export default function AuthPage() {
                 <div className="med-hero px-7 pt-8 pb-7 relative overflow-hidden">
                     <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-white/20 blur-2xl" />
                     <div className="absolute right-8 top-8 text-cyan-100/80 med-eyebrow">
-                        Med-Tech Access
+                        WELCOME
                     </div>
                     <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center mb-4 med-pulse">
                         <ShieldCheck className="w-6 h-6" />
                     </div>
-                    <h1 className="med-title-xl">员工身份验证</h1>
+                    <h1 className="med-title-xl">欢迎来到 VPS 医院分型系统</h1>
                     <p className="med-subtitle-light mt-2">
-                        请输入员工姓名与员工号，通过验证后可进入医院调研列表。
+                        请输入员工姓名与员工号，解锁对应医院列表
                     </p>
                     {employeeSession && (
                         <div className="mt-4 text-xs bg-white/15 rounded-xl px-3 py-2 backdrop-blur-sm">
@@ -86,6 +94,12 @@ export default function AuthPage() {
                 </div>
 
                 <form className="px-7 py-7 space-y-5" onSubmit={handleSubmit}>
+                    {cloudConfigHint && (
+                        <div className="rounded-xl border border-amber-300 bg-amber-50 text-amber-800 text-sm px-3 py-2.5">
+                            {cloudConfigHint}
+                        </div>
+                    )}
+
                     <label className="block">
                         <div className="text-sm font-semibold text-slate-700 mb-2">员工姓名</div>
                         <div className="flex items-center gap-2 rounded-xl px-3 py-2.5 med-input">
@@ -94,7 +108,7 @@ export default function AuthPage() {
                                 type="text"
                                 value={employeeName}
                                 onChange={(event) => setEmployeeName(event.target.value)}
-                                placeholder="例如：张伟经理"
+                                placeholder=""
                                 className="w-full bg-transparent outline-none text-slate-800 placeholder:text-slate-400"
                                 autoComplete="off"
                             />
@@ -109,7 +123,7 @@ export default function AuthPage() {
                                 type="text"
                                 value={employeeId}
                                 onChange={(event) => setEmployeeId(event.target.value)}
-                                placeholder="例如：EMP_ZW01"
+                                placeholder=""
                                 className="w-full bg-transparent outline-none text-slate-800 placeholder:text-slate-400"
                                 autoComplete="off"
                             />
@@ -135,7 +149,7 @@ export default function AuthPage() {
                         ) : (
                             <>
                                 <LogIn className="w-4 h-4" />
-                                进入系统
+                                开启我的任务
                             </>
                         )}
                     </button>

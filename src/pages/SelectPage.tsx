@@ -164,11 +164,11 @@ export default function SelectPage() {
             return [{ title: `已完成医院 (${filtered.length})`, data: filtered }];
         }
         if (filter === 'pending') {
-            return [{ title: `待填写医院 (${filtered.length})`, data: filtered }];
+            return [{ title: `待分型医院 (${filtered.length})`, data: filtered }];
         }
         return [
             { title: `已完成医院 (${filtered.filter((item) => item.isCompleted).length})`, data: filtered.filter((item) => item.isCompleted) },
-            { title: `待填写医院 (${filtered.filter((item) => !item.isCompleted).length})`, data: filtered.filter((item) => !item.isCompleted) },
+            { title: `待分型医院 (${filtered.filter((item) => !item.isCompleted).length})`, data: filtered.filter((item) => !item.isCompleted) },
         ].filter((group) => group.data.length > 0);
     }, [filter, filtered]);
 
@@ -304,14 +304,10 @@ export default function SelectPage() {
                 <div className="absolute inset-0 bg-[radial-gradient(rgba(188,219,255,0.2)_1px,transparent_1px)] [background-size:18px_18px] opacity-40" />
                 <div className="absolute -right-12 -top-10 w-56 h-56 rounded-full bg-white/20 blur-3xl" />
                 <div className="absolute -left-16 bottom-0 w-56 h-56 rounded-full bg-cyan-200/20 blur-3xl" />
-                <div className="relative z-10 text-white/90 med-eyebrow">VBP Analytics</div>
                 <div className="flex items-start justify-between gap-3">
                     <div>
-                        <h1 className="med-title-hero mb-2">VPS 快速诊断</h1>
-                        <p className="med-subtitle-light opacity-95">探索医院真实底色，定制专属VPS策略</p>
-                        <div className="mt-3 inline-flex items-center px-4 h-9 rounded-full border border-white/25 bg-white/15 text-blue-50 text-xs font-bold tracking-wide">
-                            VBP Framework V4.2
-                        </div>
+                        <h1 className="med-title-hero mb-2">VPS分型诊断</h1>
+                        <p className="med-subtitle-light opacity-95">聚焦4维诊断，识别医院画像，定制VPS策略</p>
                         {employeeSession && (
                             <p className="text-blue-100/90 text-xs mt-2 font-medium">
                                 当前身份：{employeeSession.employeeName} / {employeeSession.employeeId}
@@ -333,7 +329,7 @@ export default function SelectPage() {
                     <Search className="w-6 h-6 text-blue-500 ml-2" />
                     <input
                         type="text"
-                        placeholder="搜索医院以开始测评"
+                        placeholder="输入医院名称，快速定位任务"
                         className="flex-1 bg-transparent border-none outline-none text-lg p-1 text-slate-800 placeholder-slate-400 font-medium"
                         value={query}
                         onChange={e => setQuery(e.target.value)}

@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { ensureSupabaseConfigured, supabase } from './supabase';
 import type { AdminPermissions } from './store';
 
 interface AdminLoginPayload {
@@ -41,6 +41,8 @@ export interface VerifyAdminAccessResult {
 }
 
 export async function verifyAdminAccess(employeeNameInput: string, employeeIdInput: string): Promise<VerifyAdminAccessResult> {
+    ensureSupabaseConfigured();
+
     const employeeName = employeeNameInput.trim();
     const employeeId = employeeIdInput.trim();
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer, Legend, Tooltip } from 'recharts';
-import { ChevronLeft, CheckCircle2, Circle, ShieldAlert, Target, Zap, LayoutDashboard, Eye, EyeOff } from 'lucide-react';
+import { ChevronLeft, CheckCircle2, Circle, ShieldAlert, Target, Zap, LayoutDashboard } from 'lucide-react';
 import { useAppStore } from '../lib/store';
 import { MOCK_HOSPITALS, STRATEGIES, QUESTIONS } from '../lib/constants';
 import type { Dimension } from '../lib/constants';
@@ -33,7 +33,6 @@ export default function ResultPage() {
     const navigate = useNavigate();
     const { results, employeeSession } = useAppStore();
     const [checkedActions, setCheckedActions] = useState<Record<number, boolean>>({});
-    const [showScoreDetails, setShowScoreDetails] = useState(false);
     const [provinceAverageScores, setProvinceAverageScores] = useState<Record<Dimension, number> | null>(null);
     const [provinceAverageLabel, setProvinceAverageLabel] = useState('全省平均水平');
 
@@ -44,59 +43,19 @@ export default function ResultPage() {
         : (mockHospital || { name: '未知医院', id: hospitalId });
     const result = results[hospitalId || ''];
 
-    if (!authorizedHospital) {
-        return (
-            <div className="flex flex-col items-center justify-center min-h-screen p-8 text-center">
-                <LayoutDashboard className="w-16 h-16 text-slate-300 mb-6" />
-                <h2 className="text-xl font-bold text-slate-700 mb-2">无权限访问该医院结果</h2>
-                <p className="text-slate-500 text-sm mb-8">请返回医院列表，选择当前账号可访问的医院。</p>
-                <button
-                    onClick={() => navigate('/select')}
-                    className="med-btn med-button-primary active:scale-95 transition-transform"
-                >
-                    返回首页
-                </button>
-            </div>
-        );
-    }
-
-    if (!result) {
-        return (
-            <div className="flex flex-col items-center justify-center min-h-screen p-8 text-center">
-                <LayoutDashboard className="w-16 h-16 text-slate-300 mb-6" />
-                <h2 className="text-xl font-bold text-slate-700 mb-2">未找到【{hospital.id}】的评估数据</h2>
-                <p className="text-slate-500 text-sm mb-8">请先完成问卷调研后查看结果全景图</p>
-                <button
-                    onClick={() => navigate('/select')}
-                    className="med-btn med-button-primary active:scale-95 transition-transform"
-                >
-                    返回首页
-                </button>
-            </div>
-        );
-    }
-
-    const rawStates = (result.states ?? {}) as Record<string, unknown>;
-    const states: Record<Dimension, boolean> = {
-        philosophy: normalizeBooleanState(rawStates.philosophy),
-        mechanism: normalizeBooleanState(rawStates.mechanism),
-        team: normalizeBooleanState(rawStates.team),
-        tools: normalizeBooleanState(rawStates.tools),
-    };
-
-    const fallbackTotals: Record<Dimension, number> = { philosophy: 0, mechanism: 0, team: 0, tools: 0 };
-    QUESTIONS.forEach(q => {
-        fallbackTotals[q.dimension] += Number(q.weight ?? 1);
-    });
-    const totals = result.maxScores ?? fallbackTotals;
-
     useEffect(() => {
         let isMounted = true;
 
         const loadProvinceAverage = async () => {
-            if (!hospitalId) return;
+            if (!hospitalId || !authorizedHospital || !result) {
+                if (isMounted) {
+                    setProvinceAverageScores(null);
+                    setProvinceAverageLabel('全省平均水平');
+                }
+                return;
+            }
 
-            let province = (authorizedHospital?.province ?? '').trim();
+            let province = (authorizedHospital.province ?? '').trim();
 
             if (!province) {
                 const { data: provinceRow } = await supabase
@@ -213,20 +172,72 @@ export default function ResultPage() {
                 team: Number((sums.team / count).toFixed(2)),
                 tools: Number((sums.tools / count).toFixed(2)),
             });
-            setProvinceAverageLabel(`${province}平均（${count}家）`);
+            setProvinceAverageLabel(`${province}平均-${count}家`);
         };
 
         void loadProvinceAverage();
         return () => {
             isMounted = false;
         };
-    }, [authorizedHospital?.province, hospitalId]);
+    }, [authorizedHospital, hospitalId, result]);
+
+    if (!authorizedHospital) {
+        return (
+            <div className="flex flex-col items-center justify-center min-h-screen p-8 text-center">
+                <LayoutDashboard className="w-16 h-16 text-slate-300 mb-6" />
+                <h2 className="text-xl font-bold text-slate-700 mb-2">无权限访问该医院结果</h2>
+                <p className="text-slate-500 text-sm mb-8">请返回医院列表，选择当前账号可访问的医院。</p>
+                <button
+                    onClick={() => navigate('/select')}
+                    className="med-btn med-button-primary active:scale-95 transition-transform"
+                >
+                    返回首页
+                </button>
+            </div>
+        );
+    }
+
+    if (!result) {
+        return (
+            <div className="flex flex-col items-center justify-center min-h-screen p-8 text-center">
+                <LayoutDashboard className="w-16 h-16 text-slate-300 mb-6" />
+                <h2 className="text-xl font-bold text-slate-700 mb-2">未找到【{hospital.id}】的评估数据</h2>
+                <p className="text-slate-500 text-sm mb-8">请先完成问卷调研后查看结果全景图</p>
+                <button
+                    onClick={() => navigate('/select')}
+                    className="med-btn med-button-primary active:scale-95 transition-transform"
+                >
+                    返回首页
+                </button>
+            </div>
+        );
+    }
+
+    const rawStates = (result.states ?? {}) as Record<string, unknown>;
+    const states: Record<Dimension, boolean> = {
+        philosophy: normalizeBooleanState(rawStates.philosophy),
+        mechanism: normalizeBooleanState(rawStates.mechanism),
+        team: normalizeBooleanState(rawStates.team),
+        tools: normalizeBooleanState(rawStates.tools),
+    };
+
+    const fallbackTotals: Record<Dimension, number> = { philosophy: 0, mechanism: 0, team: 0, tools: 0 };
+    QUESTIONS.forEach(q => {
+        fallbackTotals[q.dimension] += Number(q.weight ?? 1);
+    });
+    const totals = result.maxScores ?? fallbackTotals;
 
     const data = [
-        { subject: '理念 (P)', current: result.scores.philosophy, avg: provinceAverageScores?.philosophy ?? 0, fullMark: totals.philosophy },
-        { subject: '机制 (M)', current: result.scores.mechanism, avg: provinceAverageScores?.mechanism ?? 0, fullMark: totals.mechanism },
-        { subject: '团队 (T)', current: result.scores.team, avg: provinceAverageScores?.team ?? 0, fullMark: totals.team },
-        { subject: '工具 (To)', current: result.scores.tools, avg: provinceAverageScores?.tools ?? 0, fullMark: totals.tools },
+        { subject: '理念', current: result.scores.philosophy, avg: provinceAverageScores?.philosophy ?? 0, fullMark: totals.philosophy },
+        { subject: '机制', current: result.scores.mechanism, avg: provinceAverageScores?.mechanism ?? 0, fullMark: totals.mechanism },
+        { subject: '团队', current: result.scores.team, avg: provinceAverageScores?.team ?? 0, fullMark: totals.team },
+        { subject: '工具', current: result.scores.tools, avg: provinceAverageScores?.tools ?? 0, fullMark: totals.tools },
+    ];
+    const scoreRows: { key: Dimension; label: string; current: number; avg: number; fullMark: number }[] = [
+        { key: 'philosophy', label: '理念', current: result.scores.philosophy, avg: provinceAverageScores?.philosophy ?? 0, fullMark: totals.philosophy },
+        { key: 'mechanism', label: '机制', current: result.scores.mechanism, avg: provinceAverageScores?.mechanism ?? 0, fullMark: totals.mechanism },
+        { key: 'team', label: '团队', current: result.scores.team, avg: provinceAverageScores?.team ?? 0, fullMark: totals.team },
+        { key: 'tools', label: '工具', current: result.scores.tools, avg: provinceAverageScores?.tools ?? 0, fullMark: totals.tools },
     ];
 
     const normalizedStrategyKey = normalizeStrategyKey(result.strategyKey);
@@ -236,6 +247,7 @@ export default function ResultPage() {
         strategy: result.strategyText ?? fallbackStrategy.strategy,
     };
     const mbtiTypeLabel = normalizedStrategyKey || result.strategyKey || '-';
+    const mbtiCodeCompact = mbtiTypeLabel.replace(/[\s,，]/g, '');
 
     const toggleAction = (idx: number) => {
         setCheckedActions(prev => ({ ...prev, [idx]: !prev[idx] }));
@@ -255,7 +267,6 @@ export default function ResultPage() {
                     </button>
                     <div className="flex-1 ml-2 text-center mr-8">
                         <h1 className="med-title-md text-white truncate max-w-[220px] mx-auto result-impact-title">{hospital.name}</h1>
-                        <p className="text-blue-100/90 med-eyebrow mt-1">多维分析报告</p>
                         <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5 text-[11px]">
                             <StatusBadge variant={cloudSyncVariant} label={cloudSyncLabel} />
                         </div>
@@ -272,26 +283,26 @@ export default function ResultPage() {
                     返回我的医院列表
                 </button>
 
-                <section className="rounded-[1.5rem] p-6 relative overflow-hidden result-impact-card">
+                <section className="rounded-[1.5rem] p-6 relative overflow-hidden result-impact-card result-impact-card-primary">
                     <div className="absolute -right-6 -top-6 w-32 h-32 bg-blue-400/15 rounded-full blur-2xl" />
                     <div className="relative z-10">
                         <div className="flex items-center gap-2 mb-4">
                             <span className="bg-blue-400/15 text-blue-200 p-1.5 rounded-lg shrink-0 border border-blue-200/25">
                                 <Target className="w-5 h-5" />
                             </span>
-                            <h2 className="text-blue-100 med-section-title">宏观评估分型</h2>
+                            <h2 className="text-blue-100 med-section-title">本次分型结论</h2>
                         </div>
-                        <div className="flex items-end justify-between gap-3 mb-3">
-                            <div>
+                        <div className="result-impact-mbti-grid mb-4">
+                            <div className="result-impact-mbti-panel">
                                 <div className="text-xs font-semibold text-blue-200/90 mb-1">MBTI人格</div>
-                                <div className="font-black text-3xl tracking-tight leading-none result-impact-highlight">
+                                <div className="font-extrabold text-[2.05rem] tracking-tight leading-none result-impact-highlight">
                                     {strategyData.type}
                                 </div>
                             </div>
-                            <div className="text-right">
+                            <div className="result-impact-mbti-panel result-impact-mbti-code-panel">
                                 <div className="text-xs font-semibold text-blue-200/90 mb-1">MBTI分型</div>
-                                <div className="px-3 py-1.5 rounded-lg border border-blue-200/35 bg-blue-400/10 font-mono font-bold text-blue-100">
-                                    {mbtiTypeLabel}
+                                <div className="result-impact-mbti-code">
+                                    {mbtiCodeCompact}
                                 </div>
                             </div>
                         </div>
@@ -302,32 +313,25 @@ export default function ResultPage() {
                                 </span>
                             ))}
                         </div>
-                        <div className="text-blue-50/95 p-4 rounded-xl leading-relaxed font-medium result-impact-soft-box">
-                            策略方针：{strategyData.strategy}
+                        <div className="result-impact-guidance">
+                            <div className="result-impact-guidance-label">建议方向</div>
+                            <div className="result-impact-guidance-text">{strategyData.strategy}</div>
                         </div>
                     </div>
                 </section>
 
-                <section className="rounded-[1.5rem] p-5 result-impact-card">
+                <section className="rounded-[1.5rem] p-5 result-impact-card result-impact-card-secondary">
                     <div className="flex items-center justify-between gap-3 mb-2">
                         <h2 className="text-sm font-bold text-blue-100 uppercase tracking-wider flex items-center gap-2">
                             <Zap className="w-4 h-4 text-blue-300" />
-                            <span className="med-section-title text-blue-100">四要素多维水位诊断</span>
+                            <span className="med-section-title text-blue-100">四维水位对比</span>
                         </h2>
-                        <button
-                            type="button"
-                            onClick={() => setShowScoreDetails((prev) => !prev)}
-                            className="med-btn-sm result-impact-sub-btn"
-                        >
-                            {showScoreDetails ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                            {showScoreDetails ? '隐藏数值' : '显示数值'}
-                        </button>
                     </div>
-                    <div className="h-[280px] w-full mt-4 -ml-4">
+                    <div className="h-[268px] w-full -mt-1 -ml-4">
                         <ResponsiveContainer width="100%" height="100%">
-                            <RadarChart cx="50%" cy="50%" outerRadius="70%" data={data}>
+                            <RadarChart cx="50%" cy="47%" outerRadius="70%" data={data}>
                                 <PolarGrid stroke="rgba(189,216,255,0.25)" />
-                                <PolarAngleAxis dataKey="subject" tick={{ fill: '#8db7ff', fontSize: 12, fontWeight: 700 }} />
+                                <PolarAngleAxis dataKey="subject" tick={{ fill: '#9ec4ff', fontSize: 13, fontWeight: 700 }} />
                                 <PolarRadiusAxis angle={30} domain={[0, Math.max(...Object.values(totals))]} tick={false} axisLine={false} />
                                 <Tooltip
                                     contentStyle={{
@@ -339,32 +343,33 @@ export default function ResultPage() {
                                     }}
                                 />
                                 {provinceAverageScores ? (
-                                    <Radar name={provinceAverageLabel} dataKey="avg" stroke="#7e99c5" fill="#7e99c5" fillOpacity={0.23} />
+                                    <Radar name={`（${provinceAverageLabel}）`} dataKey="avg" stroke="#9eb4d8" fill="#9eb4d8" fillOpacity={0.23} />
                                 ) : null}
-                                <Radar name="目标医院现状" dataKey="current" stroke="#4e93ff" fill="#4e93ff" fillOpacity={0.45} />
+                                <Radar name="目标医院" dataKey="current" stroke="#4e93ff" fill="#4e93ff" fillOpacity={0.45} />
                                 <Legend wrapperStyle={{ fontSize: 12, color: '#aac6ff', paddingTop: '10px' }} />
                             </RadarChart>
                         </ResponsiveContainer>
                     </div>
-                    {showScoreDetails ? (
-                        <div className="grid grid-cols-2 gap-2 mt-3">
-                            {data.map((item) => (
-                                <div key={item.subject} className="rounded-lg px-2.5 py-2 text-[11px] result-impact-soft-box">
-                                    <div className="text-blue-100/85">{item.subject}</div>
-                                    <div className="font-bold mt-0.5 result-impact-highlight">
-                                        {item.current} / {item.fullMark}
-                                    </div>
+                    <div className="grid grid-cols-2 gap-2 mt-3">
+                        {scoreRows.map((item) => (
+                            <div key={item.key} className="rounded-lg px-2.5 py-2 text-[11px] result-impact-soft-box">
+                                <div className="text-blue-100/85">{item.label}</div>
+                                <div className="font-bold mt-0.5 result-impact-highlight">
+                                    目标 {item.current} / {item.fullMark}
                                 </div>
-                            ))}
-                        </div>
-                    ) : null}
+                                {provinceAverageScores ? (
+                                    <div className="text-[10px] text-blue-200/85 mt-0.5">省均 {item.avg}</div>
+                                ) : null}
+                            </div>
+                        ))}
+                    </div>
                 </section>
 
-                <section className="rounded-[1.5rem] p-6 relative overflow-hidden result-impact-card">
+                <section className="rounded-[1.5rem] p-6 relative overflow-hidden result-impact-card result-impact-card-tertiary">
                     <div className="flex items-center justify-between mb-5">
                         <h2 className="text-sm font-bold text-blue-100 uppercase tracking-wider flex items-center gap-2">
                             <ShieldAlert className="w-4 h-4 text-blue-300" />
-                            <span className="med-section-title text-blue-100">改进建议与行动清单</span>
+                            <span className="med-section-title text-blue-100">优先行动建议</span>
                         </h2>
                         <div className="text-xs bg-white/15 text-blue-100 px-2 py-1 rounded-full font-bold">
                             {Object.values(checkedActions).filter(Boolean).length} / {result.failureActions.length}
@@ -388,10 +393,13 @@ export default function ResultPage() {
                                         onClick={() => toggleAction(idx)}
                                         className={`w-full text-left p-4 rounded-xl border transition-all duration-300 flex items-start gap-4 ${isChecked
                                             ? 'bg-white/12 border-white/16 opacity-65'
-                                            : 'bg-white/8 border-white/20 hover:border-blue-200/45'
+                                            : 'bg-white/8 border-white/24 hover:border-blue-200/45'
                                             }`}
                                     >
-                                        <div className="mt-0.5 shrink-0">
+                                        <div className="mt-0.5 shrink-0 flex items-center gap-2">
+                                            <span className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold ${isChecked ? 'bg-emerald-300/25 text-emerald-100' : 'bg-blue-300/20 text-blue-100'}`}>
+                                                {idx + 1}
+                                            </span>
                                             {isChecked
                                                 ? <CheckCircle2 className="w-6 h-6 text-emerald-300 transition-all duration-300 scale-110" />
                                                 : <Circle className="w-6 h-6 text-blue-100/65 transition-colors" />
