@@ -12,10 +12,10 @@ test.describe('VPS smoke checks', () => {
     test('frontend auth page renders key elements', async ({ page }) => {
         await page.goto('/auth');
 
-        await expect(page.getByRole('heading', { name: '欢迎来到 VPS 医院分型系统' })).toBeVisible();
-        await expect(page.getByText('员工姓名', { exact: true })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'VPSBTI医院分型测试' })).toBeVisible();
+        await expect(page.getByText('姓名', { exact: true })).toBeVisible();
         await expect(page.getByText('员工号', { exact: true })).toBeVisible();
-        await expect(page.getByRole('button', { name: '开启我的任务' })).toBeVisible();
+        await expect(page.getByRole('button', { name: '开启测试' })).toBeVisible();
     });
 
     test('admin login page renders key elements', async ({ page }) => {

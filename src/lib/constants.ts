@@ -1,5 +1,5 @@
 export type Dimension = 'philosophy' | 'mechanism' | 'team' | 'tools';
-export const DIMENSIONS: Dimension[] = ['philosophy', 'mechanism', 'team', 'tools'];
+export const DIMENSIONS: Dimension[] = ['philosophy', 'tools', 'mechanism', 'team'];
 export type ImportanceLevel = 'H' | 'M' | 'L';
 
 export const MOCK_HOSPITALS = [

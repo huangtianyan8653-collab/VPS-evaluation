@@ -164,11 +164,11 @@ export default function SelectPage() {
             return [{ title: `已完成医院 (${filtered.length})`, data: filtered }];
         }
         if (filter === 'pending') {
-            return [{ title: `待分型医院 (${filtered.length})`, data: filtered }];
+            return [{ title: `待分型测试医院 (${filtered.length})`, data: filtered }];
         }
         return [
             { title: `已完成医院 (${filtered.filter((item) => item.isCompleted).length})`, data: filtered.filter((item) => item.isCompleted) },
-            { title: `待分型医院 (${filtered.filter((item) => !item.isCompleted).length})`, data: filtered.filter((item) => !item.isCompleted) },
+            { title: `待分型测试医院 (${filtered.filter((item) => !item.isCompleted).length})`, data: filtered.filter((item) => !item.isCompleted) },
         ].filter((group) => group.data.length > 0);
     }, [filter, filtered]);
 
@@ -176,6 +176,7 @@ export default function SelectPage() {
         const date = new Date(isoTime);
         if (Number.isNaN(date.getTime())) return '时间未知';
         return date.toLocaleString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
             year: 'numeric',
             month: '2-digit',
             day: '2-digit',
@@ -306,8 +307,8 @@ export default function SelectPage() {
                 <div className="absolute -left-16 bottom-0 w-56 h-56 rounded-full bg-cyan-200/20 blur-3xl" />
                 <div className="flex items-start justify-between gap-3">
                     <div>
-                        <h1 className="med-title-hero mb-2">VPS分型诊断</h1>
-                        <p className="med-subtitle-light opacity-95">聚焦4维诊断，识别医院画像，定制VPS策略</p>
+                        <h1 className="med-title-hero mb-2">VPSBTI医院分型测试</h1>
+                        <p className="med-subtitle-light opacity-95">聚焦AMS-VPS战略4要素，打造标杆医院</p>
                         {employeeSession && (
                             <p className="text-blue-100/90 text-xs mt-2 font-medium">
                                 当前身份：{employeeSession.employeeName} / {employeeSession.employeeId}

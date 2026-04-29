@@ -29,7 +29,10 @@ interface SurveyLog {
     id: string;
     hospitalId: string;
     hospitalName: string;
+    sg: string;
     rm: string;
+    dm: string;
+    mics: string;
     province: string;
     submitterName: string;
     submitterCode: string;
@@ -57,16 +60,27 @@ interface QuestionMeta {
 
 interface ExportQuestionColumn {
     id: string;
+    questionId: string;
+    ruleVersionKey: string;
+    ruleVersionAlias: string;
+    ruleVersionCode: string;
+    ruleVersionName: string;
+    rulePublishedAt: string;
+    questionText: string;
+    dimension: Dimension | 'unknown';
     label: string;
     dimensionRank: number;
     sortOrder: number;
 }
 
+type ExportCellValue = string | number;
+type XlsxModule = typeof import('xlsx');
+
 const DIMENSION_LABELS: Record<Dimension, string> = {
-    philosophy: '理念',
-    mechanism: '机制',
-    team: '团队',
-    tools: '工具',
+    philosophy: '科学理念',
+    mechanism: '管理机制',
+    team: '专业团队',
+    tools: '信息化工具',
 };
 
 const DIMENSIONS_ORDER = [...DIMENSIONS];
@@ -113,7 +127,18 @@ function normalizeAnswer(value: unknown): boolean {
 function formatDisplayTime(value: string): string {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
-    return date.toISOString().replace('T', ' ').slice(0, 19);
+    const parts = new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+    }).formatToParts(date);
+    const partMap = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${partMap.year}-${partMap.month}-${partMap.day} ${partMap.hour}:${partMap.minute}:${partMap.second}`;
 }
 
 function getDimensionRank(value: Dimension | 'unknown'): number {
@@ -129,46 +154,124 @@ function formatScoreValue(value: number): string {
     return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
-function buildCsv(headers: string[], rows: Array<Array<string | number>>): string {
-    const escape = (value: string | number) => {
-        const text = String(value ?? '');
-        return text.includes(',') || text.includes('"') || text.includes('\n')
-            ? `"${text.replace(/"/g, '""')}"`
-            : text;
-    };
-
-    return '\uFEFF' + [headers, ...rows].map((row) => row.map(escape).join(',')).join('\n');
+function normalizeHospitalCodeKey(value: unknown): string {
+    const text = typeof value === 'string' ? value : String(value ?? '');
+    return text.trim().toUpperCase().replace(/\s+/g, '').replace(/O/g, '0');
 }
 
-function downloadCsv(csvContent: string, fileNamePrefix: string) {
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `${fileNamePrefix}-${new Date().getTime()}.csv`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+function buildSafeFileNamePart(value: string): string {
+    return value.trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-') || 'unknown';
+}
+
+function buildRuleVersionExportKey(ruleVersionCode: string | null, ruleVersionId: string | null): string {
+    const code = ruleVersionCode?.trim();
+    if (code) return code;
+
+    const id = ruleVersionId?.trim();
+    return id ? `version-${id}` : 'legacy';
+}
+
+function buildQuestionExportColumnId(
+    questionId: string,
+    ruleVersionCode: string | null,
+    ruleVersionId: string | null
+): string {
+    return `${buildRuleVersionExportKey(ruleVersionCode, ruleVersionId)}__${questionId}`;
+}
+
+function padQuestionNumber(value: number): string {
+    return String(value).padStart(2, '0');
+}
+
+function buildWorksheet(rows: ExportCellValue[][], xlsx: XlsxModule) {
+    const worksheet = xlsx.utils.aoa_to_sheet(rows);
+    worksheet['!cols'] = rows[0]?.map((_, columnIndex) => {
+        const maxLength = rows.reduce((max, row) => {
+            const value = row[columnIndex] ?? '';
+            return Math.max(max, String(value).length);
+        }, 8);
+        return { wch: Math.min(Math.max(maxLength + 2, 10), 48) };
+    });
+    return worksheet;
+}
+
+async function downloadWorkbook(
+    fileNamePrefix: string,
+    sheets: Array<{ name: string; rows: ExportCellValue[][] }>
+) {
+    const xlsx = await import('xlsx');
+    const workbook = xlsx.utils.book_new();
+    sheets.forEach((sheet) => {
+        xlsx.utils.book_append_sheet(workbook, buildWorksheet(sheet.rows, xlsx), sheet.name);
+    });
+    xlsx.writeFile(workbook, `${fileNamePrefix}-${new Date().getTime()}.xlsx`, { compression: true });
 }
 
 function buildExportQuestionColumns(data: SurveyLog[]): ExportQuestionColumn[] {
+    const versionMetaMap = new Map<string, { publishedAtMs: number; key: string }>();
+    data.forEach((log) => {
+        const key = buildRuleVersionExportKey(log.ruleVersionCode, log.ruleVersionId);
+        const publishedAtMs = log.rulePublishedAt ? new Date(log.rulePublishedAt).getTime() : Number.POSITIVE_INFINITY;
+        const previous = versionMetaMap.get(key);
+        if (!previous || publishedAtMs < previous.publishedAtMs) {
+            versionMetaMap.set(key, { key, publishedAtMs });
+        }
+    });
+
+    const versionKeys = Array.from(versionMetaMap.values())
+        .sort((a, b) => {
+            if (a.publishedAtMs !== b.publishedAtMs) return a.publishedAtMs - b.publishedAtMs;
+            return a.key.localeCompare(b.key);
+        })
+        .map((item) => item.key);
+    const versionIndexMap = new Map(versionKeys.map((key, index) => [key, index]));
+    const versionAliasMap = new Map(versionKeys.map((key, index) => [key, `V${index + 1}`]));
+
     const map = new Map<string, ExportQuestionColumn>();
 
     data.forEach((log) => {
+        const ruleVersionKey = buildRuleVersionExportKey(log.ruleVersionCode, log.ruleVersionId);
         log.detailedAnswers.forEach((answer) => {
-            if (map.has(answer.questionId)) return;
-            map.set(answer.questionId, {
-                id: answer.questionId,
-                label: answer.questionId,
+            const id = buildQuestionExportColumnId(answer.questionId, log.ruleVersionCode, log.ruleVersionId);
+            if (map.has(id)) return;
+            map.set(id, {
+                id,
+                questionId: answer.questionId,
+                ruleVersionKey,
+                ruleVersionAlias: '',
+                ruleVersionCode: log.ruleVersionCode ?? '',
+                ruleVersionName: log.ruleVersionName ?? '',
+                rulePublishedAt: log.rulePublishedAt ? formatDisplayTime(log.rulePublishedAt) : '',
+                questionText: answer.text,
+                dimension: answer.dimension,
+                label: '',
                 dimensionRank: getDimensionRank(answer.dimension),
                 sortOrder: answer.sortOrder,
             });
         });
     });
 
-    return Array.from(map.values()).sort((a, b) => {
+    const sortedColumns = Array.from(map.values()).sort((a, b) => {
+        const versionDiff = (versionIndexMap.get(a.ruleVersionKey) ?? 999) - (versionIndexMap.get(b.ruleVersionKey) ?? 999);
+        if (versionDiff !== 0) return versionDiff;
         if (a.dimensionRank !== b.dimensionRank) return a.dimensionRank - b.dimensionRank;
         if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
         return a.id.localeCompare(b.id);
+    });
+
+    const questionCountByVersion = new Map<string, number>();
+    return sortedColumns.map((column) => {
+        const nextCount = (questionCountByVersion.get(column.ruleVersionKey) ?? 0) + 1;
+        questionCountByVersion.set(column.ruleVersionKey, nextCount);
+        const questionLabel = `Q${padQuestionNumber(nextCount)}`;
+        const label = versionKeys.length > 1
+            ? `${versionAliasMap.get(column.ruleVersionKey) ?? 'V?'}_${questionLabel}`
+            : questionLabel;
+        return {
+            ...column,
+            ruleVersionAlias: versionAliasMap.get(column.ruleVersionKey) ?? 'V1',
+            label,
+        };
     });
 }
 
@@ -181,6 +284,7 @@ export default function DataCenterPage() {
     const [showRecycleBin, setShowRecycleBin] = useState(false);
     const [isGroupedByLatest, setIsGroupedByLatest] = useState(false);
     const [selectedRm, setSelectedRm] = useState('all');
+    const [isExportingData, setIsExportingData] = useState(false);
     const canManageData = Boolean(adminSession?.permissions.dataManage ?? (adminSession?.role === 'super_admin'));
     const canClearAllTestData = adminSession?.role === 'super_admin';
     const isRecycleBinView = canManageData && showRecycleBin;
@@ -204,20 +308,23 @@ export default function DataCenterPage() {
         }
 
         const rows = data ?? [];
-        const permissionHospitalMetaMap = new Map<string, { hospitalName: string; province: string; rm: string }>();
+        const permissionHospitalMetaMap = new Map<string, { hospitalName: string; province: string; sg: string; rm: string; dm: string; mics: string }>();
         const { data: permissionHospitals, error: permissionHospitalsError } = await supabase
             .from('employee_permissions')
-            .select('hospital_code, hospital_name, province, rm')
+            .select('hospital_code, hospital_name, province, sg, rm, dm, mics')
             .eq('is_active', true);
 
         if (!permissionHospitalsError && permissionHospitals) {
             permissionHospitals.forEach((row) => {
-                const code = typeof row.hospital_code === 'string' ? row.hospital_code.trim().toLowerCase() : '';
+                const code = normalizeHospitalCodeKey(row.hospital_code);
                 const name = typeof row.hospital_name === 'string' ? row.hospital_name.trim() : '';
                 const province = typeof row.province === 'string' ? row.province.trim() : '';
+                const sg = typeof row.sg === 'string' ? row.sg.trim() : '';
                 const rm = typeof row.rm === 'string' ? row.rm.trim() : '';
+                const dm = typeof row.dm === 'string' ? row.dm.trim() : '';
+                const mics = typeof row.mics === 'string' ? row.mics.trim() : '';
                 if (!code || permissionHospitalMetaMap.has(code)) return;
-                permissionHospitalMetaMap.set(code, { hospitalName: name, province, rm });
+                permissionHospitalMetaMap.set(code, { hospitalName: name, province, sg, rm, dm, mics });
             });
         }
 
@@ -267,11 +374,11 @@ export default function DataCenterPage() {
 
         return rows.map((item) => {
             const hospitalId = typeof item.hospital_id === 'string' ? item.hospital_id.trim() : String(item.hospital_id ?? '');
-            const hospitalCodeKey = hospitalId.toLowerCase();
+            const hospitalCodeKey = normalizeHospitalCodeKey(hospitalId);
             const hospitalMetaFromPermissions = permissionHospitalMetaMap.get(hospitalCodeKey);
             const hospitalFromPermissions = hospitalMetaFromPermissions?.hospitalName;
             const hospitalFromRow = typeof item.hospital_name === 'string' ? item.hospital_name.trim() : '';
-            const hospitalFromMock = MOCK_HOSPITALS.find((h) => h.id === hospitalId)?.name;
+            const hospitalFromMock = MOCK_HOSPITALS.find((h) => normalizeHospitalCodeKey(h.id) === hospitalCodeKey)?.name;
             const ruleVersionId = typeof item.rule_version_id === 'string' ? item.rule_version_id : null;
             const rawAnswersObject = (typeof item.raw_answers === 'object' && item.raw_answers !== null)
                 ? (item.raw_answers as Record<string, unknown>)
@@ -313,7 +420,10 @@ export default function DataCenterPage() {
                 id: String(item.id),
                 hospitalId,
                 hospitalName: hospitalFromPermissions || hospitalFromRow || hospitalFromMock || `未知医院(${hospitalId || 'N/A'})`,
+                sg: hospitalMetaFromPermissions?.sg || (typeof item.sg === 'string' ? item.sg.trim() : ''),
                 rm: hospitalMetaFromPermissions?.rm || (typeof item.rm === 'string' ? item.rm.trim() : ''),
+                dm: hospitalMetaFromPermissions?.dm || (typeof item.dm === 'string' ? item.dm.trim() : ''),
+                mics: hospitalMetaFromPermissions?.mics || (typeof item.mics === 'string' ? item.mics.trim() : ''),
                 province: hospitalMetaFromPermissions?.province || (typeof item.province === 'string' ? item.province.trim() : ''),
                 submitterName: typeof item.submitter_name === 'string' ? item.submitter_name.trim() : '',
                 submitterCode: typeof item.submitter_code === 'string' ? item.submitter_code.trim() : '',
@@ -442,20 +552,25 @@ export default function DataCenterPage() {
         await reloadLogs();
     };
 
-    const exportCompleteData = (dataToExport: SurveyLog[], fileNamePrefix: string) => {
+    const exportCompleteData = async (dataToExport: SurveyLog[], fileNamePrefix: string) => {
         if (dataToExport.length === 0) return;
+        setIsExportingData(true);
         const questionColumns = buildExportQuestionColumns(dataToExport);
 
         const headers = [
             'result_id',
-            'submitted_at_utc',
+            'submitted_at_beijing',
             'hospital_name',
             'hospital_code',
             'province',
+            'sg',
+            'rm',
+            'dm',
+            'mics',
             'employee_name',
             'employee_id',
             'rule_version_code',
-            'rule_published_at',
+            'rule_published_at_beijing',
             'score_philosophy',
             'score_mechanism',
             'score_team',
@@ -470,12 +585,16 @@ export default function DataCenterPage() {
         ];
 
         const rows = dataToExport.map((log) => {
-            const row: Array<string | number> = [
+            const row: ExportCellValue[] = [
                 log.id,
                 formatDisplayTime(log.timestamp),
                 log.hospitalName,
                 log.hospitalId,
                 log.province,
+                log.sg,
+                log.rm,
+                log.dm,
+                log.mics,
                 log.submitterName,
                 log.submitterCode,
                 log.ruleVersionCode ?? '',
@@ -492,86 +611,60 @@ export default function DataCenterPage() {
                 log.strategyType ?? '',
             ];
 
+            const logRuleVersionKey = buildRuleVersionExportKey(log.ruleVersionCode, log.ruleVersionId);
             questionColumns.forEach((column) => {
-                const hasAnswer = Object.prototype.hasOwnProperty.call(log.rawAnswers, column.id);
+                if (column.ruleVersionKey !== logRuleVersionKey) {
+                    row.push('非本版本');
+                    return;
+                }
+
+                const hasAnswer = Object.prototype.hasOwnProperty.call(log.rawAnswers, column.questionId);
                 if (!hasAnswer) {
                     row.push('未参与');
                     return;
                 }
-                row.push(log.rawAnswers[column.id] ? '是' : '否');
+                row.push(log.rawAnswers[column.questionId] ? '是' : '否');
             });
 
             return row;
         });
 
-        downloadCsv(buildCsv(headers, rows), fileNamePrefix);
-    };
-
-    const exportQuestionDictionary = async () => {
-        const [{ data: questions, error: questionsError }, { data: versions, error: versionsError }] = await Promise.all([
-            supabase
-                .from('rule_questions')
-                .select('rule_version_id, question_code, dimension, text, sort_order'),
-            supabase
-                .from('rule_versions')
-                .select('id, version_code, version_name, published_at'),
-        ]);
-
-        if (questionsError || versionsError) {
-            const message = questionsError?.message || versionsError?.message || '未知错误';
-            alert(`导出题目字典失败：${message}`);
-            return;
-        }
-
-        const versionCodeMap = new Map<string, { code: string; name: string; publishedAt: string }>();
-        (versions ?? []).forEach((row) => {
-            const id = typeof row.id === 'string' ? row.id : '';
-            if (!id) return;
-            versionCodeMap.set(id, {
-                code: typeof row.version_code === 'string' ? row.version_code : '',
-                name: typeof row.version_name === 'string' ? row.version_name : '',
-                publishedAt: typeof row.published_at === 'string' ? formatDisplayTime(row.published_at) : '',
-            });
-        });
-
-        const headers = [
+        const dictionaryHeaders = [
+            'export_column_id',
+            'version_question_key',
             'question_id',
             'question_text',
             'dimension',
             'sort_order',
+            'rule_version_alias',
             'rule_version_code',
             'rule_version_name',
-            'rule_published_at',
+            'rule_published_at_beijing',
         ];
+        const dictionaryRows = questionColumns.map((column) => [
+            column.label,
+            column.id,
+            column.questionId,
+            column.questionText,
+            column.dimension === 'unknown' ? 'unknown' : DIMENSION_LABELS[column.dimension],
+            column.sortOrder,
+            column.ruleVersionAlias,
+            column.ruleVersionCode,
+            column.ruleVersionName,
+            column.rulePublishedAt,
+        ]);
 
-        const rows = (questions ?? [])
-            .map((row) => {
-                const versionId = typeof row.rule_version_id === 'string' ? row.rule_version_id : '';
-                const version = versionCodeMap.get(versionId);
-                const dimension = DIMENSIONS.includes(row.dimension as Dimension) ? row.dimension as Dimension : 'unknown';
-                const sortOrder = Number.isFinite(Number(row.sort_order)) ? Number(row.sort_order) : 0;
-                return [
-                    typeof row.question_code === 'string' ? row.question_code : '',
-                    typeof row.text === 'string' ? row.text : '',
-                    dimension === 'unknown' ? 'unknown' : DIMENSION_LABELS[dimension],
-                    sortOrder,
-                    version?.code ?? '',
-                    version?.name ?? '',
-                    version?.publishedAt ?? '',
-                ] as Array<string | number>;
-            })
-            .sort((a, b) => {
-                const versionDiff = String(a[4]).localeCompare(String(b[4]));
-                if (versionDiff !== 0) return versionDiff;
-                const dimensionOrder = ['理念', '机制', '团队', '工具', 'unknown'];
-                const dimensionDiff = dimensionOrder.indexOf(String(a[2])) - dimensionOrder.indexOf(String(b[2]));
-                if (dimensionDiff !== 0) return dimensionDiff;
-                const sortDiff = Number(a[3]) - Number(b[3]);
-                if (sortDiff !== 0) return sortDiff;
-                return String(a[0]).localeCompare(String(b[0]));
-            });
-
-        downloadCsv(buildCsv(headers, rows), 'question-id-dictionary');
+        try {
+            await downloadWorkbook(fileNamePrefix, [
+                { name: '完整数据', rows: [headers, ...rows] },
+                { name: '题目字典', rows: [dictionaryHeaders, ...dictionaryRows] },
+            ]);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : '未知错误';
+            alert(`导出失败：${message}`);
+        } finally {
+            setIsExportingData(false);
+        }
     };
 
     const detailData = logs.find((log) => log.id === viewDetail) ?? null;
@@ -591,6 +684,15 @@ export default function DataCenterPage() {
         if (selectedRm === 'all') return logs;
         return logs.filter((log) => log.rm.trim().toLowerCase() === selectedRm.toLowerCase());
     }, [logs, selectedRm]);
+
+    const isRmFiltered = selectedRm !== 'all';
+    const exportFileNamePrefix = isRmFiltered
+        ? `survey-results-rm-${buildSafeFileNamePart(selectedRm)}`
+        : 'survey-results-complete';
+    const exportButtonLabel = isRmFiltered ? '导出当前 RM 数据 XLSX' : '导出全部数据 XLSX';
+    const exportScopeHint = isRmFiltered
+        ? `当前仅导出 RM：${selectedRm}（${filteredLogs.length} 条）`
+        : `当前导出全部 RM（${filteredLogs.length} 条）`;
 
     const groupedData = useMemo(() => {
         if (!isGroupedByLatest || isRecycleBinView) return { latest: filteredLogs, history: [] as SurveyLog[] };
@@ -626,7 +728,7 @@ export default function DataCenterPage() {
                         <th className="p-4 font-semibold">调研医院</th>
                         <th className="p-4 font-semibold">评估时间</th>
                         <th className="p-4 font-semibold">分型诊断</th>
-                        <th className="p-4 font-semibold">四要素得分 (P-M-T-To)</th>
+                        <th className="p-4 font-semibold">四要素得分（科学理念-信息化工具-管理机制-专业团队）</th>
                         <th className="p-4 text-right font-semibold">操作</th>
                     </tr>
                 </thead>
@@ -647,7 +749,7 @@ export default function DataCenterPage() {
                             <td className="p-4">
                                 <div className="flex items-center gap-2 text-sm text-slate-600">
                                     <Clock className="w-4 h-4 text-slate-400" />
-                                    {formatDisplayTime(log.timestamp)} (UTC)
+                                    {formatDisplayTime(log.timestamp)} (北京时间)
                                 </div>
                             </td>
                             <td className="p-4">
@@ -658,10 +760,11 @@ export default function DataCenterPage() {
                             </td>
                             <td className="p-4">
                                 <div className="flex gap-1.5 font-mono text-sm">
-                                    <span className="w-6 h-6 rounded flex items-center justify-center bg-slate-100 text-slate-600">{log.scores.philosophy}</span>
-                                    <span className="w-6 h-6 rounded flex items-center justify-center bg-slate-100 text-slate-600">{log.scores.mechanism}</span>
-                                    <span className="w-6 h-6 rounded flex items-center justify-center bg-slate-100 text-slate-600">{log.scores.team}</span>
-                                    <span className="w-6 h-6 rounded flex items-center justify-center bg-slate-100 text-slate-600">{log.scores.tools}</span>
+                                    {DIMENSIONS_ORDER.map((dimension) => (
+                                        <span key={dimension} className="w-6 h-6 rounded flex items-center justify-center bg-slate-100 text-slate-600">
+                                            {log.scores[dimension]}
+                                        </span>
+                                    ))}
                                 </div>
                             </td>
                             <td className="p-4 text-right">
@@ -793,21 +896,17 @@ export default function DataCenterPage() {
                                 ))}
                             </select>
                             <button
-                                onClick={exportQuestionDictionary}
-                                disabled={isLoading}
-                                className="med-btn-sm med-button-secondary disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                <Download className="w-4 h-4" />
-                                导出题目字典
-                            </button>
-                            <button
-                                onClick={() => exportCompleteData(filteredLogs, selectedRm === 'all' ? 'survey-results-complete' : `survey-results-rm-${selectedRm}`)}
-                                disabled={filteredLogs.length === 0 || isLoading}
+                                onClick={() => void exportCompleteData(filteredLogs, exportFileNamePrefix)}
+                                disabled={filteredLogs.length === 0 || isLoading || isExportingData}
+                                title={exportScopeHint}
                                 className="med-btn-sm med-button-primary disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                <Download className="w-4 h-4" />
-                                导出完整数据
+                                {isExportingData ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                                {isExportingData ? '正在导出...' : exportButtonLabel}
                             </button>
+                            <span className="text-xs text-slate-400 font-medium min-w-[150px]">
+                                {exportScopeHint}
+                            </span>
                         </>
                     )}
                 </div>
@@ -848,13 +947,13 @@ export default function DataCenterPage() {
                             <div>
                                 <h3 className="font-bold text-slate-800 text-lg">{detailData.hospitalName}</h3>
                                 <p className="text-xs text-slate-400 mt-0.5">
-                                    {formatDisplayTime(detailData.timestamp)} (UTC)
+                                    {formatDisplayTime(detailData.timestamp)} (北京时间)
                                     &nbsp;&middot;&nbsp;
                                     分型：<span className="text-primary-600 font-semibold">{detailData.strategyKey}</span>
                                     &nbsp;&middot;&nbsp;
                                     四要素：
                                     <span className="font-mono text-slate-600">
-                                        {detailData.scores.philosophy}-{detailData.scores.mechanism}-{detailData.scores.team}-{detailData.scores.tools}
+                                        {DIMENSIONS_ORDER.map((dimension) => detailData.scores[dimension]).join('-')}
                                     </span>
                                 </p>
                             </div>

@@ -150,7 +150,7 @@ test.describe('VPS regression checks', () => {
 
         await page.goto('/select');
 
-        await expect(page.getByRole('heading', { name: 'VPS分型诊断' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'VPSBTI医院分型测试' })).toBeVisible();
         await expect(page.getByText('自动化医院A')).toBeVisible();
         await expect(page.getByText('自动化医院B')).toBeVisible();
         await expect(page.getByRole('button', { name: '回顾' })).toBeVisible();
@@ -161,7 +161,7 @@ test.describe('VPS regression checks', () => {
         await expect(page.getByText('已完成医院 (1)')).toBeVisible();
 
         await page.getByRole('button', { name: '未填写 (1)' }).click();
-        await expect(page.getByText('待分型医院 (1)')).toBeVisible();
+        await expect(page.getByText('待分型测试医院 (1)')).toBeVisible();
     });
 
     test('survey page blocks hospital without permission', async ({ page }) => {
@@ -183,12 +183,12 @@ test.describe('VPS regression checks', () => {
         });
 
         await page.goto('/survey/AUTO001');
-        await expect(page.getByRole('heading', { name: '理念维度快速诊断' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: '科学理念 要素诊断' })).toBeVisible();
 
         await page.getByRole('button', { name: '是 (Yes)' }).first().click();
         await page.getByRole('button', { name: '继续下一项' }).click();
 
-        await expect(page.getByRole('heading', { name: '机制维度快速诊断' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: '信息化工具 要素诊断' })).toBeVisible();
     });
 
     test('result page renders seeded MBTI summary', async ({ page }) => {

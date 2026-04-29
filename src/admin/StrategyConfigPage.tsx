@@ -18,10 +18,10 @@ interface StrategyItem {
 }
 
 const DIMENSION_LABELS: Record<Dimension, string> = {
-    philosophy: '理念',
-    mechanism: '机制',
-    team: '团队',
-    tools: '工具',
+    philosophy: '科学理念',
+    mechanism: '管理机制',
+    team: '专业团队',
+    tools: '信息化工具',
 };
 
 function parseThreshold(value: string | number, fallback: number): number {
@@ -463,8 +463,8 @@ export default function StrategyConfigPage() {
                             ))}
 
                             <div className="mt-4 text-xs leading-relaxed bg-blue-50/60 p-3 rounded-lg text-blue-800 border border-blue-100">
-                                判定规则：当维度得分 <code>score &gt;= threshold</code> 时，理念记为 <strong>J</strong>（否则 P）、
-                                机制记为 <strong>T</strong>（否则 F）、团队记为 <strong>E</strong>（否则 I）、工具记为 <strong>S</strong>（否则 N）。
+                                判定规则：当维度得分 <code>score &gt;= threshold</code> 时，科学理念记为 <strong>J</strong>（否则 P）、
+                                管理机制记为 <strong>T</strong>（否则 F）、专业团队记为 <strong>E</strong>（否则 I）、信息化工具记为 <strong>S</strong>（否则 N）。
                             </div>
                         </div>
                     </div>

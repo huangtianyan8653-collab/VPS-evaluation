@@ -248,6 +248,11 @@ h4 {
   letter-spacing: -0.015em;
 }
 
+.med-title-survey {
+  font-size: 1.26rem;
+  line-height: 1.2;
+}
+
 .med-title-md {
   font-size: 1.08rem;
   line-height: 1.22;
@@ -468,6 +473,7 @@ h4 {
 .result-impact-guidance-label {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -478,6 +484,8 @@ h4 {
   border: 1px solid rgba(185, 220, 255, 0.28);
   background: rgba(110, 180, 255, 0.14);
   margin-bottom: 10px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .result-impact-guidance-text {

@@ -1,25 +1,25 @@
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowRight, Loader2, Plus, Save, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, Archive, ArrowRight, Download, Loader2, Plus, Save, Trash2, Upload, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import * as XLSX from 'xlsx';
 import { DIMENSIONS } from '../lib/constants';
 import type { Dimension, ImportanceLevel, StrategyProfile } from '../lib/constants';
 import type { RuleQuestion } from '../lib/rules';
 import { fetchActiveRule, publishRuleVersion } from '../lib/rules';
+import { supabase } from '../lib/supabase';
 import { useAppStore } from '../lib/store';
 
 const DIMENSION_LABELS: Record<Dimension, string> = {
-    philosophy: '理念',
-    mechanism: '机制',
-    team: '团队',
-    tools: '工具',
+    philosophy: '科学理念',
+    mechanism: '管理机制',
+    team: '专业团队',
+    tools: '信息化工具',
 };
 
 const DIMENSION_ORDER: Record<Dimension, number> = {
     philosophy: 0,
-    mechanism: 1,
-    team: 2,
-    tools: 3,
+    tools: 1,
+    mechanism: 2,
+    team: 3,
 };
 
 const IMPORTANCE_OPTIONS: ImportanceLevel[] = ['H', 'M', 'L'];
@@ -60,6 +60,32 @@ interface ParsedQuestionImport {
     previewRows: ParsedImportRow[];
     questions: RuleQuestion[];
 }
+
+interface ArchiveRuleVersion {
+    id: string;
+    alias: string;
+    name: string;
+    code: string;
+    isActive: boolean;
+    publishedAt: string;
+    createdAt: string;
+}
+
+interface ArchiveQuestion {
+    ruleVersionId: string;
+    questionCode: string;
+    dimension: Dimension | null;
+    text: string;
+    description: string;
+    failureAction: string;
+    weight: number | '';
+    sortOrder: number;
+    isDecisive: boolean;
+    importance: ImportanceLevel;
+}
+
+type ExportCellValue = string | number;
+type XlsxModule = typeof import('xlsx');
 
 const emptyForm = (dimension: Dimension = 'philosophy'): QuestionFormState => ({
     dimension,
@@ -107,10 +133,10 @@ function pickHeader(headerMap: Map<string, string>, aliases: string[]): string |
 function parseDimension(value: string): Dimension | null {
     const normalized = value.toLowerCase().replace(/\s/g, '');
 
-    if (['理念', 'philosophy', 'p'].includes(normalized)) return 'philosophy';
-    if (['机制', 'mechanism', 'm'].includes(normalized)) return 'mechanism';
-    if (['团队', 'team', 't'].includes(normalized)) return 'team';
-    if (['工具', 'tools', 'tool', 'to'].includes(normalized)) return 'tools';
+    if (['科学理念', '理念', 'philosophy', 'p'].includes(normalized)) return 'philosophy';
+    if (['管理机制', '机制', 'mechanism', 'm'].includes(normalized)) return 'mechanism';
+    if (['专业团队', '团队', 'team', 't'].includes(normalized)) return 'team';
+    if (['信息化工具', '工具', 'tools', 'tool', 'to'].includes(normalized)) return 'tools';
 
     return null;
 }
@@ -159,29 +185,105 @@ function buildQuestionId(dimension: Dimension, sortOrder: number, index: number)
     return `import_${dimension}_${sortOrder}_${suffix}`;
 }
 
-function parseImportFileRows(file: File, currentQuestions: RuleQuestion[]): Promise<ParsedQuestionImport> {
-    return file.arrayBuffer().then((arrayBuffer) => {
-        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-        const sheetName = workbook.SheetNames[0];
+function formatBeijingTime(value: unknown): string {
+    if (typeof value !== 'string' || !value.trim()) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
 
-        if (!sheetName) {
-            throw new Error('Excel 中没有可读取的工作表。');
-        }
+    const parts = new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+    }).formatToParts(date);
+    const partMap = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${partMap.year}-${partMap.month}-${partMap.day} ${partMap.hour}:${partMap.minute}:${partMap.second}`;
+}
 
-        const worksheet = workbook.Sheets[sheetName];
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: '' });
+function buildArchiveWorksheet(rows: ExportCellValue[][], xlsx: XlsxModule) {
+    const worksheet = xlsx.utils.aoa_to_sheet(rows);
+    worksheet['!cols'] = rows[0]?.map((_, columnIndex) => {
+        const maxLength = rows.reduce((max, row) => {
+            const value = row[columnIndex] ?? '';
+            return Math.max(max, String(value).length);
+        }, 8);
+        return { wch: Math.min(Math.max(maxLength + 2, 10), 52) };
+    });
+    return worksheet;
+}
 
-        if (rows.length === 0) {
-            throw new Error('表格中没有可导入的数据行。');
-        }
+async function downloadArchiveWorkbook(
+    fileNamePrefix: string,
+    sheets: Array<{ name: string; rows: ExportCellValue[][] }>
+) {
+    const xlsx = await import('xlsx');
+    const workbook = xlsx.utils.book_new();
+    sheets.forEach((sheet) => {
+        xlsx.utils.book_append_sheet(workbook, buildArchiveWorksheet(sheet.rows, xlsx), sheet.name);
+    });
+    xlsx.writeFile(workbook, `${fileNamePrefix}-${Date.now()}.xlsx`, { compression: true });
+}
 
-        const headerMap = getHeaderMap(Object.keys(rows[0] ?? {}));
-        const dimensionKey = pickHeader(headerMap, ['维度', 'dimension']);
-        const questionKey = pickHeader(headerMap, ['题目', '题干', '问题', 'question']);
-        const orderKey = pickHeader(headerMap, ['顺序', '序号', '排序', 'sort_order', 'order']);
-        const decisiveKey = pickHeader(headerMap, ['是否决定性题目', '决定性题目', 'is_decisive', 'isdecisive']);
-        const importanceKey = pickHeader(headerMap, ['重要程度', '重要性', '重要程度排序', 'importance', 'priority']);
-        const actionKey = pickHeader(headerMap, ['建议行动', '失败动作', '补救动作', 'failure_action', 'action']);
+function normalizeArchiveVersion(row: Record<string, unknown>, index: number): ArchiveRuleVersion {
+    const id = toText(row.id);
+    return {
+        id,
+        alias: `V${String(index + 1).padStart(3, '0')}`,
+        name: toText(row.version_name) || '未命名版本',
+        code: toText(row.version_code) || id,
+        isActive: row.is_active === true,
+        publishedAt: formatBeijingTime(row.published_at),
+        createdAt: formatBeijingTime(row.created_at),
+    };
+}
+
+function normalizeArchiveQuestion(row: Record<string, unknown>): ArchiveQuestion {
+    const weight = Number(row.weight);
+    const sortOrder = Number(row.sort_order);
+    return {
+        ruleVersionId: toText(row.rule_version_id),
+        questionCode: toText(row.question_code),
+        dimension: parseDimension(toText(row.dimension)),
+        text: toText(row.text),
+        description: toText(row.description),
+        failureAction: toText(row.failure_action),
+        weight: Number.isFinite(weight) ? weight : '',
+        sortOrder: Number.isFinite(sortOrder) ? sortOrder : 0,
+        isDecisive: parseDecisive(row.is_decisive),
+        importance: parseImportance(row.importance),
+    };
+}
+
+async function parseImportFileRows(file: File, currentQuestions: RuleQuestion[]): Promise<ParsedQuestionImport> {
+    const [arrayBuffer, xlsx] = await Promise.all([
+        file.arrayBuffer(),
+        import('xlsx'),
+    ]);
+    const workbook = xlsx.read(arrayBuffer, { type: 'array' });
+    const sheetName = workbook.SheetNames[0];
+
+    if (!sheetName) {
+        throw new Error('Excel 中没有可读取的工作表。');
+    }
+
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = xlsx.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: '' });
+
+    if (rows.length === 0) {
+        throw new Error('表格中没有可导入的数据行。');
+    }
+
+    const headerMap = getHeaderMap(Object.keys(rows[0] ?? {}));
+    const dimensionKey = pickHeader(headerMap, ['维度', 'dimension']);
+    const questionKey = pickHeader(headerMap, ['题目', '题干', '问题', 'question']);
+    const orderKey = pickHeader(headerMap, ['顺序', '序号', '排序', 'sort_order', 'order']);
+    const decisiveKey = pickHeader(headerMap, ['是否决定性题目', '决定性题目', 'is_decisive', 'isdecisive']);
+    const importanceKey = pickHeader(headerMap, ['重要程度', '重要性', '重要程度排序', 'importance', 'priority']);
+    const actionKey = pickHeader(headerMap, ['建议行动', '失败动作', '补救动作', 'failure_action', 'action']);
 
         const missingHeaders: string[] = [];
         if (!dimensionKey) missingHeaders.push('维度');
@@ -223,7 +325,7 @@ function parseImportFileRows(file: File, currentQuestions: RuleQuestion[]): Prom
 
             const dimension = parseDimension(dimensionRaw);
             if (!dimension) {
-                rowErrors.push(`第 ${rowNumber} 行维度不合法（${dimensionRaw || '空'}），仅支持：理念/机制/团队/工具。`);
+                rowErrors.push(`第 ${rowNumber} 行维度不合法（${dimensionRaw || '空'}），仅支持：科学理念/信息化工具/管理机制/专业团队。`);
                 return;
             }
 
@@ -308,7 +410,6 @@ function parseImportFileRows(file: File, currentQuestions: RuleQuestion[]): Prom
             previewRows: dedupedRows.slice(0, IMPORT_PREVIEW_LIMIT),
             questions,
         };
-    });
 }
 
 export default function QuestionConfigPage() {
@@ -324,6 +425,7 @@ export default function QuestionConfigPage() {
     const [isLoading, setIsLoading] = useState(true);
     const [isPublishing, setIsPublishing] = useState(false);
     const [isParsingImport, setIsParsingImport] = useState(false);
+    const [isExportingArchive, setIsExportingArchive] = useState(false);
     const [toast, setToast] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
 
@@ -530,6 +632,149 @@ export default function QuestionConfigPage() {
         setToast(`导入完成：共 ${parsedImport.parsedRows} 道题，点击「发布至云端」后生效。`);
     };
 
+    const exportQuestionArchive = async () => {
+        setIsExportingArchive(true);
+        setError(null);
+
+        try {
+            const [{ data: versions, error: versionsError }, { data: questionsData, error: questionsError }] = await Promise.all([
+                supabase
+                    .from('rule_versions')
+                    .select('id, version_name, version_code, is_active, published_at, created_at')
+                    .order('published_at', { ascending: true }),
+                supabase
+                    .from('rule_questions')
+                    .select('rule_version_id, question_code, dimension, text, description, failure_action, weight, sort_order, is_decisive, importance')
+                    .order('sort_order', { ascending: true }),
+            ]);
+
+            if (versionsError || questionsError) {
+                throw new Error(versionsError?.message || questionsError?.message || '读取题库历史失败。');
+            }
+
+            const archiveVersions = (versions ?? [])
+                .map((row, index) => normalizeArchiveVersion(row as Record<string, unknown>, index))
+                .filter((version) => version.id.length > 0);
+
+            if (archiveVersions.length === 0) {
+                throw new Error('还没有已发布的题库版本，暂无可导出的历史档案。');
+            }
+
+            const versionById = new Map(archiveVersions.map((version) => [version.id, version]));
+            const versionOrder = new Map(archiveVersions.map((version, index) => [version.id, index]));
+            const archiveQuestions = (questionsData ?? [])
+                .map((row) => normalizeArchiveQuestion(row as Record<string, unknown>))
+                .filter((question) => versionById.has(question.ruleVersionId))
+                .sort((a, b) => {
+                    const versionDiff = (versionOrder.get(a.ruleVersionId) ?? 9999) - (versionOrder.get(b.ruleVersionId) ?? 9999);
+                    if (versionDiff !== 0) return versionDiff;
+                    const dimensionDiff = (a.dimension ? DIMENSION_ORDER[a.dimension] : 99) - (b.dimension ? DIMENSION_ORDER[b.dimension] : 99);
+                    if (dimensionDiff !== 0) return dimensionDiff;
+                    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+                    return a.questionCode.localeCompare(b.questionCode);
+                });
+
+            const countByVersion = new Map<string, { total: number; dimensions: Record<Dimension, number> }>();
+            archiveQuestions.forEach((question) => {
+                const current = countByVersion.get(question.ruleVersionId) ?? {
+                    total: 0,
+                    dimensions: { philosophy: 0, mechanism: 0, team: 0, tools: 0 },
+                };
+                current.total += 1;
+                if (question.dimension) {
+                    current.dimensions[question.dimension] += 1;
+                }
+                countByVersion.set(question.ruleVersionId, current);
+            });
+
+            const versionHeaders = [
+                'archive_version_id',
+                'rule_version_id',
+                'rule_version_code',
+                'rule_version_name',
+                'is_active',
+                'published_at_beijing',
+                'created_at_beijing',
+                'question_count',
+                'philosophy_count',
+                'mechanism_count',
+                'team_count',
+                'tools_count',
+            ];
+            const versionRows = archiveVersions.map((version) => {
+                const counts = countByVersion.get(version.id) ?? {
+                    total: 0,
+                    dimensions: { philosophy: 0, mechanism: 0, team: 0, tools: 0 },
+                };
+                return [
+                    version.alias,
+                    version.id,
+                    version.code,
+                    version.name,
+                    version.isActive ? '是' : '否',
+                    version.publishedAt,
+                    version.createdAt,
+                    counts.total,
+                    counts.dimensions.philosophy,
+                    counts.dimensions.mechanism,
+                    counts.dimensions.team,
+                    counts.dimensions.tools,
+                ];
+            });
+
+            const questionHeaders = [
+                'archive_version_id',
+                'rule_version_id',
+                'question_record_key',
+                'rule_version_code',
+                'rule_version_name',
+                'is_active',
+                'published_at_beijing',
+                'question_id',
+                'dimension',
+                'sort_order',
+                'question_text',
+                'weight',
+                'is_decisive',
+                'importance',
+                'failure_action',
+                'description',
+            ];
+            const questionRows = archiveQuestions.map((question) => {
+                const version = versionById.get(question.ruleVersionId);
+                const versionKey = version?.code || version?.alias || question.ruleVersionId;
+                return [
+                    version?.alias ?? '',
+                    question.ruleVersionId,
+                    `${versionKey}__${question.questionCode}`,
+                    version?.code ?? '',
+                    version?.name ?? '',
+                    version?.isActive ? '是' : '否',
+                    version?.publishedAt ?? '',
+                    question.questionCode,
+                    question.dimension ? DIMENSION_LABELS[question.dimension] : 'unknown',
+                    question.sortOrder,
+                    question.text,
+                    question.weight,
+                    question.isDecisive ? '是' : '否',
+                    question.importance,
+                    question.failureAction,
+                    question.description,
+                ];
+            });
+
+            await downloadArchiveWorkbook('question-bank-archive', [
+                { name: '版本索引', rows: [versionHeaders, ...versionRows] },
+                { name: '题库明细', rows: [questionHeaders, ...questionRows] },
+            ]);
+            setToast(`题库历史档案已导出：${archiveVersions.length} 个版本，${archiveQuestions.length} 条题目记录。`);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : '导出题库历史档案失败，请重试。');
+        } finally {
+            setIsExportingArchive(false);
+        }
+    };
+
     if (isLoading) {
         return (
             <div className="rounded-2xl p-12 text-center text-slate-500 med-panel">
@@ -579,6 +824,33 @@ export default function QuestionConfigPage() {
                     >
                         {isPublishing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                         发布至云端
+                    </button>
+                </div>
+            </div>
+
+            <div className="rounded-2xl p-5 med-panel border border-blue-100/70 bg-gradient-to-r from-white via-sky-50/70 to-slate-50">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                    <div className="flex items-start gap-4">
+                        <div className="w-11 h-11 rounded-2xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
+                            <Archive className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <h2 className="text-base font-bold text-slate-800">题库历史档案</h2>
+                            <p className="text-sm text-slate-600 mt-1">
+                                用于留存和追溯所有已发布题库版本，包含版本索引、题目、维度、权重、决定性题目、重要程度和失败动作。
+                            </p>
+                            <p className="text-xs text-slate-400 mt-1">
+                                日常分析请使用数据中心的完整数据 XLSX；历史审计或题库复盘时再导出这里的档案。
+                            </p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={exportQuestionArchive}
+                        disabled={isExportingArchive}
+                        className="med-btn-sm med-button-secondary disabled:opacity-60 disabled:cursor-not-allowed shrink-0"
+                    >
+                        {isExportingArchive ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                        导出历史档案 XLSX
                     </button>
                 </div>
             </div>

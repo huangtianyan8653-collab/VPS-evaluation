@@ -9,6 +9,14 @@ import { normalizeBooleanState, normalizeStrategyKey, toDimensionCode } from '..
 import { supabase } from '../lib/supabase';
 import StatusBadge from '../components/StatusBadge';
 
+const DIMENSION_DISPLAY_ORDER: Dimension[] = ['philosophy', 'tools', 'mechanism', 'team'];
+const DIMENSION_LABELS: Record<Dimension, string> = {
+    philosophy: '科学理念',
+    tools: '信息化工具',
+    mechanism: '管理机制',
+    team: '专业团队',
+};
+
 function toScoreMap(value: unknown): Record<Dimension, number> | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const raw = value as Record<string, unknown>;
@@ -227,18 +235,19 @@ export default function ResultPage() {
     });
     const totals = result.maxScores ?? fallbackTotals;
 
-    const data = [
-        { subject: '理念', current: result.scores.philosophy, avg: provinceAverageScores?.philosophy ?? 0, fullMark: totals.philosophy },
-        { subject: '机制', current: result.scores.mechanism, avg: provinceAverageScores?.mechanism ?? 0, fullMark: totals.mechanism },
-        { subject: '团队', current: result.scores.team, avg: provinceAverageScores?.team ?? 0, fullMark: totals.team },
-        { subject: '工具', current: result.scores.tools, avg: provinceAverageScores?.tools ?? 0, fullMark: totals.tools },
-    ];
-    const scoreRows: { key: Dimension; label: string; current: number; avg: number; fullMark: number }[] = [
-        { key: 'philosophy', label: '理念', current: result.scores.philosophy, avg: provinceAverageScores?.philosophy ?? 0, fullMark: totals.philosophy },
-        { key: 'mechanism', label: '机制', current: result.scores.mechanism, avg: provinceAverageScores?.mechanism ?? 0, fullMark: totals.mechanism },
-        { key: 'team', label: '团队', current: result.scores.team, avg: provinceAverageScores?.team ?? 0, fullMark: totals.team },
-        { key: 'tools', label: '工具', current: result.scores.tools, avg: provinceAverageScores?.tools ?? 0, fullMark: totals.tools },
-    ];
+    const data = DIMENSION_DISPLAY_ORDER.map((dimension) => ({
+        subject: DIMENSION_LABELS[dimension],
+        current: result.scores[dimension],
+        avg: provinceAverageScores?.[dimension] ?? 0,
+        fullMark: totals[dimension],
+    }));
+    const scoreRows: { key: Dimension; label: string; current: number; avg: number; fullMark: number }[] = DIMENSION_DISPLAY_ORDER.map((dimension) => ({
+        key: dimension,
+        label: DIMENSION_LABELS[dimension],
+        current: result.scores[dimension],
+        avg: provinceAverageScores?.[dimension] ?? 0,
+        fullMark: totals[dimension],
+    }));
 
     const normalizedStrategyKey = normalizeStrategyKey(result.strategyKey);
     const fallbackStrategy = STRATEGIES[normalizedStrategyKey] || { type: '未知分型 (解析异常)', strategy: '请检查分型字母映射或规则配置。' };
@@ -256,7 +265,7 @@ export default function ResultPage() {
     const isAllDone = result.failureActions.length > 0 &&
         Object.values(checkedActions).filter(Boolean).length === result.failureActions.length;
     const cloudSyncVariant = 'completed';
-    const cloudSyncLabel = 'VPS分型解析完成！';
+    const cloudSyncLabel = 'VPSBTI医院分型测试完成';
 
     return (
         <div className="min-h-screen pb-20 result-impact-page text-white">
@@ -294,27 +303,27 @@ export default function ResultPage() {
                         </div>
                         <div className="result-impact-mbti-grid mb-4">
                             <div className="result-impact-mbti-panel">
-                                <div className="text-xs font-semibold text-blue-200/90 mb-1">MBTI人格</div>
+                                <div className="text-xs font-semibold text-blue-200/90 mb-1">VPSBTI 医院人格</div>
                                 <div className="font-extrabold text-[2.05rem] tracking-tight leading-none result-impact-highlight">
                                     {strategyData.type}
                                 </div>
                             </div>
                             <div className="result-impact-mbti-panel result-impact-mbti-code-panel">
-                                <div className="text-xs font-semibold text-blue-200/90 mb-1">MBTI分型</div>
+                                <div className="text-xs font-semibold text-blue-200/90 mb-1">VPSBTI 医院分型</div>
                                 <div className="result-impact-mbti-code">
                                     {mbtiCodeCompact}
                                 </div>
                             </div>
                         </div>
                         <div className="flex gap-2 mb-5">
-                            {(['philosophy', 'mechanism', 'team', 'tools'] as Dimension[]).map((key) => (
+                            {DIMENSION_DISPLAY_ORDER.map((key) => (
                                 <span key={key} className={`text-xs font-bold px-2 py-0.5 rounded-sm ${states[key] ? 'bg-emerald-400/16 text-emerald-300 border border-emerald-300/25' : 'bg-rose-400/16 text-rose-200 border border-rose-300/25'}`}>
-                                    {key === 'philosophy' ? '理念' : key === 'mechanism' ? '机制' : key === 'team' ? '团队' : '工具'}={toDimensionCode(key, states[key])}
+                                    {DIMENSION_LABELS[key]}={toDimensionCode(key, states[key])}
                                 </span>
                             ))}
                         </div>
                         <div className="result-impact-guidance">
-                            <div className="result-impact-guidance-label">建议方向</div>
+                            <div className="result-impact-guidance-label">需重点完善的AMS-VPS 4要素</div>
                             <div className="result-impact-guidance-text">{strategyData.strategy}</div>
                         </div>
                     </div>
@@ -324,7 +333,7 @@ export default function ResultPage() {
                     <div className="flex items-center justify-between gap-3 mb-2">
                         <h2 className="text-sm font-bold text-blue-100 uppercase tracking-wider flex items-center gap-2">
                             <Zap className="w-4 h-4 text-blue-300" />
-                            <span className="med-section-title text-blue-100">四维水位对比</span>
+                            <span className="med-section-title text-blue-100">AMS-VPS 4要素水平对比</span>
                         </h2>
                     </div>
                     <div className="h-[268px] w-full -mt-1 -ml-4">
@@ -369,7 +378,7 @@ export default function ResultPage() {
                     <div className="flex items-center justify-between mb-5">
                         <h2 className="text-sm font-bold text-blue-100 uppercase tracking-wider flex items-center gap-2">
                             <ShieldAlert className="w-4 h-4 text-blue-300" />
-                            <span className="med-section-title text-blue-100">优先行动建议</span>
+                            <span className="med-section-title text-blue-100 leading-snug">打造AMS-VPS标杆医院行动建议</span>
                         </h2>
                         <div className="text-xs bg-white/15 text-blue-100 px-2 py-1 rounded-full font-bold">
                             {Object.values(checkedActions).filter(Boolean).length} / {result.failureActions.length}

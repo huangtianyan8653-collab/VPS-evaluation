@@ -9,14 +9,14 @@ import type { ResultData } from '../lib/store';
 import { supabase } from '../lib/supabase';
 import { fetchActiveRule, getFallbackRule } from '../lib/rules';
 import type { ActiveRule } from '../lib/rules';
-import { evaluateDimensionQuestions } from '../lib/surveyEvaluation';
+import { collectFailureActionsByDisplayOrder, evaluateDimensionQuestions } from '../lib/surveyEvaluation';
 import type { DimensionEvaluation } from '../lib/surveyEvaluation';
 
 const DIMENSIONS: { id: Dimension; label: string }[] = [
-    { id: 'philosophy', label: '理念' },
-    { id: 'mechanism', label: '机制' },
-    { id: 'team', label: '团队' },
-    { id: 'tools', label: '工具' },
+    { id: 'philosophy', label: '科学理念' },
+    { id: 'tools', label: '信息化工具' },
+    { id: 'mechanism', label: '管理机制' },
+    { id: 'team', label: '专业团队' },
 ];
 
 export default function SurveyPage() {
@@ -114,17 +114,15 @@ export default function SurveyPage() {
         const scores: Record<Dimension, number> = { philosophy: 0, mechanism: 0, team: 0, tools: 0 };
         const maxScores: Record<Dimension, number> = { philosophy: 0, mechanism: 0, team: 0, tools: 0 };
         const states: Record<Dimension, boolean> = { philosophy: false, mechanism: false, team: false, tools: false };
-        const failureActions: string[] = [];
-
         (Object.keys(dimensionEvaluations) as Dimension[]).forEach((dimension) => {
             const evaluation = dimensionEvaluations[dimension];
             scores[dimension] = evaluation.score;
             maxScores[dimension] = evaluation.maxScore;
-            states[dimension] = evaluation.forcedTrue
-                ? true
+            states[dimension] = evaluation.forcedFalse
+                ? false
                 : isHigh(evaluation.score, activeRule.thresholds[dimension]);
-            failureActions.push(...evaluation.failureActions);
         });
+        const failureActions = collectFailureActionsByDisplayOrder(dimensionEvaluations);
 
         const strategyKey = getStrategyKey(states.philosophy, states.mechanism, states.team, states.tools);
         const strategy = activeRule.strategies[strategyKey] || { type: '未知分型 (解析异常)', strategy: '请检查维度计算逻辑或规则配置。' };
@@ -146,8 +144,17 @@ export default function SurveyPage() {
         let cloudCreatedAt: string | null = null;
 
         try {
+            const hospitalSnapshot = {
+                hospital_name: authorizedHospital?.hospitalName || mockHospital?.name || '',
+                province: authorizedHospital?.province ?? '',
+                sg: authorizedHospital?.sg ?? '',
+                rm: authorizedHospital?.rm ?? '',
+                dm: authorizedHospital?.dm ?? '',
+                mics: authorizedHospital?.mics ?? '',
+            };
             const payload = {
                 hospital_id: hospitalId,
+                ...hospitalSnapshot,
                 submitter_name: employeeSession.employeeName,
                 submitter_code: employeeSession.employeeId,
                 rule_version_id: result.ruleVersionId,
@@ -170,6 +177,33 @@ export default function SurveyPage() {
             if (!error && firstInsert.data) {
                 cloudRecordId = String(firstInsert.data.id ?? '');
                 cloudCreatedAt = String(firstInsert.data.created_at ?? '');
+            }
+
+            if (error && /column .*hospital_name|column .*province|column .*sg|column .*rm|column .*dm|column .*mics|schema cache/i.test(error.message)) {
+                const payloadWithoutHospitalSnapshot = {
+                    hospital_id: hospitalId,
+                    submitter_name: employeeSession.employeeName,
+                    submitter_code: employeeSession.employeeId,
+                    rule_version_id: result.ruleVersionId,
+                    scores: result.scores,
+                    max_scores: result.maxScores,
+                    states: result.states,
+                    strategy_key: result.strategyKey,
+                    strategy_type: result.strategyType,
+                    strategy_text: result.strategyText,
+                    failure_actions: result.failureActions,
+                    raw_answers: answers
+                };
+                const noHospitalSnapshotInsert = await supabase
+                    .from('survey_results')
+                    .insert(payloadWithoutHospitalSnapshot)
+                    .select('id, created_at')
+                    .single();
+                error = noHospitalSnapshotInsert.error;
+                if (!error && noHospitalSnapshotInsert.data) {
+                    cloudRecordId = String(noHospitalSnapshotInsert.data.id ?? '');
+                    cloudCreatedAt = String(noHospitalSnapshotInsert.data.created_at ?? '');
+                }
             }
 
             if (error && /column .*submitter_name.* does not exist|column .*submitter_code.* does not exist|schema cache/i.test(error.message)) {
@@ -294,7 +328,7 @@ export default function SurveyPage() {
                 </button>
                 <div className="flex-1 ml-2">
                     <h1 className="med-title-md text-white">{hospital.name}</h1>
-                    <p className="text-blue-100/90 med-eyebrow">VPS快速分型</p>
+                    <p className="text-blue-100/90 med-eyebrow">VPSBTI医院分型测试</p>
                 </div>
             </div>
 
@@ -326,7 +360,7 @@ export default function SurveyPage() {
             <div className="flex-1 px-5 py-6 overflow-y-auto relative z-10">
                 <div className="mb-7 flex justify-between items-end">
                     <div>
-                        <h2 className="med-title-lg text-white">{DIMENSIONS[activeTab].label}维度快速诊断</h2>
+                        <h2 className="med-title-lg med-title-survey text-white">{DIMENSIONS[activeTab].label} 要素诊断</h2>
                     </div>
                     <div className="text-sm font-semibold text-white bg-white/18 px-3 py-1 rounded-full border border-white/30">
                         {currentDimAnswered} / {currentDimLength}
@@ -404,7 +438,7 @@ export default function SurveyPage() {
                                     云端写入中...
                                 </>
                             ) : (
-                                calculatedAll ? '提交评估并生成报告' : '请完成所有题目'
+                                calculatedAll ? '提交评估并生成报告' : '请完成全部诊断'
                             )}
                         </button>
                     )}
